@@ -1,8 +1,11 @@
 //! Cross-platform GPU discovery + (where free) live util/temp/power.
 //!
-//! macOS: `system_profiler SPDisplaysDataType -json` runs without sudo and
-//! gives us name + vendor + shared VRAM. Live util/temp/power needs either
-//! `powermetrics` (sudo) or IOReport (private FFI) — both deferred.
+//! macOS: `system_profiler SPDisplaysDataType -json` (no sudo) for static
+//! identity; `ioreg -r -d 1 -w 0 -c IOAccelerator` (also no sudo) for live
+//! `Device Utilization %` and `In use system memory` from each accelerator's
+//! `PerformanceStatistics` dict. Temperature + per-rail power still need
+//! `powermetrics --samplers gpu_power` (sudo) or IOReport private FFI —
+//! deferred to v0.2.
 //!
 //! Linux: scan `/sys/class/drm/card*/device/` for vendor/device PCI IDs and
 //! read `gpu_busy_percent` per tick when the driver exposes it (AMDGPU,
@@ -10,8 +13,8 @@
 
 use crate::collect::model::GpuTick;
 
-const HINT_MACOS: &str =
-    "live util/temp/power requires `sudo powermetrics --samplers gpu_power` (deferred)";
+const HINT_MACOS_TEMP_POWER: &str =
+    "temperature + per-rail power need `sudo powermetrics --samplers gpu_power` (deferred)";
 const HINT_LINUX_GENERIC: &str =
     "driver doesn't expose gpu_busy_percent; install nvml or amdgpu-tools";
 
@@ -27,11 +30,30 @@ impl GpuDiscovery {
         }
     }
 
-    /// Refresh per-tick mutable fields (util/temp). On macOS this is a no-op;
-    /// on Linux it re-reads gpu_busy_percent.
+    /// Refresh per-tick mutable fields. On macOS we shell out to `ioreg` and
+    /// pull live `PerformanceStatistics` from each IOAccelerator. On Linux we
+    /// re-read `gpu_busy_percent` from sysfs.
     #[allow(unused_mut, unused_variables)]
     pub fn refresh(&mut self) -> Vec<GpuTick> {
         let mut out = self.devices.clone();
+
+        #[cfg(target_os = "macos")]
+        {
+            let stats = collect_macos_gpu_stats();
+            // Zip in declaration order. system_profiler and ioreg both
+            // enumerate accelerators in the same order on every Apple Silicon
+            // box we've seen, so positional matching is reliable.
+            for (dev, s) in out.iter_mut().zip(stats.iter()) {
+                dev.util_pct = Some(s.device_util_pct);
+                if s.in_use_system_memory > 0 {
+                    dev.vram_used_bytes = Some(s.in_use_system_memory);
+                }
+                // Live util is here; keep the hint focused on what's still
+                // missing (temp + power).
+                dev.live_data_hint = Some(HINT_MACOS_TEMP_POWER.into());
+            }
+        }
+
         #[cfg(target_os = "linux")]
         for (i, dev) in out.iter_mut().enumerate() {
             if let Some(util) = read_linux_busy_percent(i) {
@@ -39,6 +61,7 @@ impl GpuDiscovery {
                 dev.live_data_hint = None;
             }
         }
+
         out
     }
 }
@@ -91,10 +114,80 @@ fn discover() -> Vec<GpuTick> {
                 util_pct: None,
                 temp_c: None,
                 power_w: None,
-                live_data_hint: Some(HINT_MACOS.into()),
+                live_data_hint: Some(HINT_MACOS_TEMP_POWER.into()),
             }
         })
         .collect()
+}
+
+/// One row per IOAccelerator entry from `ioreg`.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Default, PartialEq)]
+struct MacGpuStats {
+    device_util_pct: f32,
+    renderer_util_pct: f32,
+    tiler_util_pct: f32,
+    in_use_system_memory: u64,
+    alloc_system_memory: u64,
+}
+
+#[cfg(target_os = "macos")]
+fn collect_macos_gpu_stats() -> Vec<MacGpuStats> {
+    use std::process::Command;
+    let Ok(out) = Command::new("ioreg")
+        .args(["-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_ioreg_perf_stats(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parse `"PerformanceStatistics" = {"key"=val,...}` lines out of ioreg
+/// output. One entry per accelerator. Pure string work — exercised by tests.
+#[cfg(target_os = "macos")]
+fn parse_ioreg_perf_stats(text: &str) -> Vec<MacGpuStats> {
+    const PREFIX: &str = "\"PerformanceStatistics\" = {";
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(idx) = line.find(PREFIX) else {
+            continue;
+        };
+        let body_start = idx + PREFIX.len();
+        let Some(rel_end) = line[body_start..].find('}') else {
+            continue;
+        };
+        let body = &line[body_start..body_start + rel_end];
+
+        let mut stats = MacGpuStats::default();
+        for pair in body.split(',') {
+            // Each pair is `"Key"=value`. Numbers only as values in the
+            // PerformanceStatistics dict, no nested commas to worry about.
+            let Some(eq) = pair.find('=') else { continue };
+            let key = pair[..eq].trim().trim_matches('"');
+            let val = pair[eq + 1..].trim();
+            match key {
+                "Device Utilization %" => {
+                    stats.device_util_pct = val.parse::<f32>().unwrap_or(0.0);
+                }
+                "Renderer Utilization %" => {
+                    stats.renderer_util_pct = val.parse::<f32>().unwrap_or(0.0);
+                }
+                "Tiler Utilization %" => {
+                    stats.tiler_util_pct = val.parse::<f32>().unwrap_or(0.0);
+                }
+                "In use system memory" => {
+                    stats.in_use_system_memory = val.parse::<u64>().unwrap_or(0);
+                }
+                "Alloc system memory" => {
+                    stats.alloc_system_memory = val.parse::<u64>().unwrap_or(0);
+                }
+                _ => {}
+            }
+        }
+        out.push(stats);
+    }
+    out
 }
 
 #[cfg(target_os = "linux")]
@@ -237,5 +330,59 @@ mod tests {
     fn passes_through_unknown_format() {
         assert_eq!(strip_macos_vendor_key("Apple"), "Apple");
         assert_eq!(strip_macos_vendor_key("NVIDIA Corp"), "NVIDIA Corp");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_real_perf_stats_line() {
+        // Captured verbatim from `ioreg -r -d 1 -w 0 -c IOAccelerator` on M3 Pro.
+        let sample = r#"
++-o AGXAcceleratorG15X  <class AGXAcceleratorG15X, id 0x100000481, ...>
+    {
+      "model" = "Apple M3 Pro"
+      "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=16749051904,"Tiler Utilization %"=7,"recoveryCount"=0,"lastRecoveryTime"=0,"Renderer Utilization %"=11,"TiledSceneBytes"=1441792,"Device Utilization %"=16,"SplitSceneCount"=0,"Allocated PB Size"=89915392,"In use system memory"=568164352}
+    }
+        "#;
+        let stats = parse_ioreg_perf_stats(sample);
+        assert_eq!(stats.len(), 1);
+        let s = &stats[0];
+        assert_eq!(s.device_util_pct as i32, 16);
+        assert_eq!(s.renderer_util_pct as i32, 11);
+        assert_eq!(s.tiler_util_pct as i32, 7);
+        assert_eq!(s.in_use_system_memory, 568_164_352);
+        assert_eq!(s.alloc_system_memory, 16_749_051_904);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn handles_multiple_accelerators() {
+        let sample = r#"
++-o A
+    "PerformanceStatistics" = {"Device Utilization %"=10,"In use system memory"=100}
++-o B
+    "PerformanceStatistics" = {"Device Utilization %"=90,"In use system memory"=200}
+        "#;
+        let stats = parse_ioreg_perf_stats(sample);
+        assert_eq!(stats.len(), 2);
+        assert_eq!(stats[0].device_util_pct as i32, 10);
+        assert_eq!(stats[1].device_util_pct as i32, 90);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn no_perf_stats_yields_empty_vec() {
+        assert!(parse_ioreg_perf_stats("nothing useful here").is_empty());
+        assert!(parse_ioreg_perf_stats("").is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn missing_fields_default_to_zero() {
+        let sample = r#""PerformanceStatistics" = {"Device Utilization %"=42}"#;
+        let stats = parse_ioreg_perf_stats(sample);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].device_util_pct as i32, 42);
+        assert_eq!(stats[0].renderer_util_pct, 0.0);
+        assert_eq!(stats[0].in_use_system_memory, 0);
     }
 }

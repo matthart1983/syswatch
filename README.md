@@ -30,7 +30,7 @@
 | 4 | Disks | `iostat`, `iotop` (aggregate) |
 | 5 | Filesystems | `df -h`, `df -i`, `mount` |
 | 6 | Procs | `htop`, `ps auxf`, `pstree` |
-| 7 | GPU | `system_profiler SPDisplaysDataType` / `/sys/class/drm` |
+| 7 | GPU | `ioreg AGXAccelerator PerformanceStatistics` / `/sys/class/drm` |
 | 8 | Power | `pmset`, `ioreg AppleSmartBattery` / `/sys/class/power_supply` |
 | 9 | Services | `launchctl list` / `systemctl list-units` |
 | 0 | Net | `nettop`, `iftop` |
@@ -95,7 +95,7 @@ All twelve tabs render real data on macOS and Linux. Cross-platform collection v
 
 **Deferred to v0.2** — Snapshot+Diff (footer S/D), Profiles (P), Recording/Replay (R), Settings (`,`), Help (`?`), filter (`/`).
 
-**Deferred behind sudo** — fans, per-component power, GPU live util on Apple Silicon (all need `powermetrics`); macOS thermal zone temps (need IOReport private FFI). Linux gets these for free via sysfs.
+**Deferred behind sudo** — fans, per-component power, GPU temperature + per-rail power (all need `powermetrics`); macOS thermal zone temps (need IOReport private FFI). GPU **utilization** and used memory on Apple Silicon are no-sudo via ioreg's `AGXAccelerator PerformanceStatistics`. Linux gets thermal zones for free via sysfs.
 
 **Deferred behind features** — NVIDIA live GPU stats (`gpu-nvidia` cargo feature, `nvml-wrapper`), SMART disk health (`smart` cargo feature, `smartctl --json`).
 

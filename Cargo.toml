@@ -1,6 +1,6 @@
 [package]
 name = "syswatch"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Single-host, read-only system diagnostics TUI. Twelve tabs covering CPU, memory, disks, processes, GPU, power, services, network, plus a Timeline scrubber and an Insights anomaly engine. Sibling to netwatch."
 license = "MIT"

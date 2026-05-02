@@ -14,6 +14,10 @@
   <em>Sibling to <a href="https://github.com/matthart1983/netwatch">NetWatch</a>. Same chrome. Same palette. Twelve tabs covering everything that runs on one box.</em>
 </p>
 
+<p align="center">
+  <img src="demo.gif" alt="SysWatch — Overview, CPU, Memory, Procs, Power, Services, Timeline, Insights" width="800">
+</p>
+
 ---
 
 ## What it shows

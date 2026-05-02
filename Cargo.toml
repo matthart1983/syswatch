@@ -2,12 +2,20 @@
 name = "syswatch"
 version = "0.1.0"
 edition = "2021"
-description = "Single-host, read-only system diagnostics TUI. Sibling to netwatch."
+description = "Single-host, read-only system diagnostics TUI. Twelve tabs covering CPU, memory, disks, processes, GPU, power, services, network, plus a Timeline scrubber and an Insights anomaly engine. Sibling to netwatch."
 license = "MIT"
 repository = "https://github.com/matthart1983/syswatch"
+homepage = "https://github.com/matthart1983/syswatch"
 readme = "README.md"
 keywords = ["system", "monitoring", "tui", "diagnostics", "observability"]
 categories = ["command-line-utilities"]
+exclude = [
+    # Demo assets aren't needed by anyone consuming the crate.
+    "demo.gif",
+    "demo.tape",
+    "Formula/**",
+    "LAUNCH_DRAFT.md",
+]
 
 [[bin]]
 name = "syswatch"
@@ -26,7 +34,11 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Reuse netwatch-sdk for memory/loadavg/disk/interface collection so syswatch
 # and netwatch-agent share a single source of truth for those parsers.
-netwatch-sdk = { path = "../../netwatch-sdk" }
+# For local dev against an in-progress sdk change, add
+#   [patch.crates-io]
+#   netwatch-sdk = { path = "../../netwatch-sdk" }
+# in this Cargo.toml — keep it out of commits.
+netwatch-sdk = "0.1"
 
 [features]
 default = []

@@ -13,12 +13,100 @@
 
 use crate::collect::model::GpuTick;
 
+// ── NVIDIA via nvml-wrapper (opt-in via `gpu-nvidia` feature) ────────────
+//
+// Lazy-initializes a single `Nvml` handle on first use. If init fails (no
+// driver, library missing, container without device passthrough), every
+// nvml call here returns None and the rest of the GPU pipeline falls back
+// to the PCI-ID-only stub for NVIDIA cards.
+#[cfg(all(target_os = "linux", feature = "gpu-nvidia"))]
+mod nvidia {
+    use super::GpuTick;
+    use nvml_wrapper::enum_wrappers::device::TemperatureSensor;
+    use nvml_wrapper::Nvml;
+    use std::sync::OnceLock;
+
+    // Option<Nvml>: None if init failed. We attempt init exactly once per
+    // process; reattempts on transient failures aren't worth the complexity.
+    static NVML: OnceLock<Option<Nvml>> = OnceLock::new();
+
+    fn nvml() -> Option<&'static Nvml> {
+        NVML.get_or_init(|| Nvml::init().ok()).as_ref()
+    }
+
+    pub fn discover() -> Vec<GpuTick> {
+        let Some(nvml) = nvml() else {
+            return Vec::new();
+        };
+        let count = nvml.device_count().unwrap_or(0);
+        (0..count)
+            .filter_map(|i| nvml.device_by_index(i).ok())
+            .map(|d| {
+                let mem = d.memory_info().ok();
+                GpuTick {
+                    name: d.name().unwrap_or_else(|_| "NVIDIA".into()),
+                    vendor: "NVIDIA".into(),
+                    driver: nvml.sys_driver_version().ok(),
+                    vram_total_bytes: mem.as_ref().map(|m| m.total),
+                    vram_used_bytes: mem.as_ref().map(|m| m.used),
+                    util_pct: None,
+                    renderer_util_pct: None,
+                    tiler_util_pct: None,
+                    temp_c: None,
+                    power_w: None,
+                    live_data_hint: None,
+                }
+            })
+            .collect()
+    }
+
+    /// Refresh per-tick mutable fields for every NVIDIA device in `devs`.
+    /// Maps NVIDIA-vendor entries to nvml indices in encounter order — same
+    /// shape as the AMDGPU sysfs path.
+    pub fn refresh(devs: &mut [GpuTick]) {
+        let Some(nvml) = nvml() else {
+            return;
+        };
+        let mut nv_idx: u32 = 0;
+        for dev in devs.iter_mut() {
+            if dev.vendor != "NVIDIA" {
+                continue;
+            }
+            let Ok(d) = nvml.device_by_index(nv_idx) else {
+                nv_idx += 1;
+                continue;
+            };
+            if let Ok(util) = d.utilization_rates() {
+                dev.util_pct = Some(util.gpu as f32);
+            }
+            if let Ok(mem) = d.memory_info() {
+                dev.vram_total_bytes = Some(mem.total);
+                dev.vram_used_bytes = Some(mem.used);
+            }
+            if let Ok(t) = d.temperature(TemperatureSensor::Gpu) {
+                dev.temp_c = Some(t as f32);
+            }
+            if let Ok(mw) = d.power_usage() {
+                dev.power_w = Some(mw as f32 / 1000.0);
+            }
+            dev.live_data_hint = None;
+            nv_idx += 1;
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 const HINT_MACOS_TEMP_POWER: &str =
     "temperature + per-rail power need `sudo powermetrics --samplers gpu_power` (deferred)";
 #[cfg(target_os = "linux")]
-const HINT_LINUX_GENERIC: &str =
-    "driver doesn't expose gpu_busy_percent; install nvml or amdgpu-tools";
+const HINT_LINUX_NO_AMDGPU: &str =
+    "amdgpu driver not loaded — load it for util/VRAM/temp/power, or use the proprietary driver";
+#[cfg(target_os = "linux")]
+const HINT_LINUX_NVIDIA_NO_NVML: &str =
+    "build with --features nvidia (linked against libnvidia-ml) for util/VRAM/temp/power";
+#[cfg(target_os = "linux")]
+const HINT_LINUX_INTEL: &str =
+    "i915/xe live util needs `gpu_busy_percent` (recent kernels); per-rail power not exposed";
 
 pub struct GpuDiscovery {
     /// Cached at startup (subprocess on macOS is too slow to poll).
@@ -58,11 +146,41 @@ impl GpuDiscovery {
             }
         }
 
+        #[cfg(all(target_os = "linux", feature = "gpu-nvidia"))]
+        nvidia::refresh(&mut out);
+
         #[cfg(target_os = "linux")]
         for (i, dev) in out.iter_mut().enumerate() {
+            // gpu_busy_percent: AMDGPU + recent i915/xe both expose it.
             if let Some(util) = read_linux_busy_percent(i) {
                 dev.util_pct = Some(util);
                 dev.live_data_hint = None;
+            }
+            if dev.vendor == "AMD" {
+                let device_path =
+                    std::path::PathBuf::from(format!("/sys/class/drm/card{}/device", i));
+                if let Some(used) = read_amdgpu_vram_bytes(&device_path.join("mem_info_vram_used"))
+                {
+                    dev.vram_used_bytes = Some(used);
+                }
+                // hwmon dir name varies (hwmon0, hwmon1, ...) — find the
+                // first one nested under device/hwmon/.
+                if let Some(hwmon) = find_amdgpu_hwmon_dir(&device_path) {
+                    if let Some(t) = read_hwmon_temp_c(&hwmon.join("temp1_input")) {
+                        dev.temp_c = Some(t);
+                    }
+                    if let Some(w) = read_hwmon_power_w(&hwmon.join("power1_average")) {
+                        dev.power_w = Some(w);
+                    }
+                }
+                // We've covered util/vram/temp/power — clear the hint so
+                // the UI doesn't show a "needs nvml" message on AMD.
+                if dev.util_pct.is_some()
+                    && dev.vram_used_bytes.is_some()
+                    && (dev.temp_c.is_some() || dev.power_w.is_some())
+                {
+                    dev.live_data_hint = None;
+                }
             }
         }
 
@@ -203,10 +321,13 @@ fn discover() -> Vec<GpuTick> {
     let Ok(entries) = fs::read_dir("/sys/class/drm") else {
         return out;
     };
-    for entry in entries.flatten() {
+    // Sort so the per-card index used by refresh() matches discovery order.
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        // Match cardN (no suffix).
+        // Match cardN (no suffix — skip cardN-HDMI-A-1 connector entries).
         if !name_str.starts_with("card") || name_str.contains('-') {
             continue;
         }
@@ -232,19 +353,46 @@ fn discover() -> Vec<GpuTick> {
             device_id.unwrap_or_else(|| "Unknown".into())
         );
 
+        // Per-vendor sysfs probes. AMD: amdgpu exposes mem_info_vram_total
+        // even before any client allocates. NVIDIA: PCI ID only without nvml.
+        // Intel: name from device ID; util via gpu_busy_percent in refresh.
+        let vram_total_bytes = if vendor == "AMD" {
+            read_amdgpu_vram_bytes(&device_path.join("mem_info_vram_total"))
+        } else {
+            None
+        };
+        let live_data_hint = match vendor.as_str() {
+            "AMD" => None, // refresh() will fill util/vram_used/temp/power
+            "NVIDIA" => Some(HINT_LINUX_NVIDIA_NO_NVML.into()),
+            "Intel" => Some(HINT_LINUX_INTEL.into()),
+            _ => Some(HINT_LINUX_NO_AMDGPU.into()),
+        };
+
         out.push(GpuTick {
             name,
             vendor,
             driver: None,
-            vram_total_bytes: None,
+            vram_total_bytes,
             vram_used_bytes: None,
             util_pct: None,
             renderer_util_pct: None,
             tiler_util_pct: None,
             temp_c: None,
             power_w: None,
-            live_data_hint: Some(HINT_LINUX_GENERIC.into()),
+            live_data_hint,
         });
+    }
+    // Replace the PCI-ID-only NVIDIA stubs with rich nvml-derived entries
+    // when the feature is on and nvml init succeeds. nvml output supersedes
+    // sysfs entirely for NVIDIA — no stable mapping between sysfs cardN and
+    // nvml index is exposed.
+    #[cfg(feature = "gpu-nvidia")]
+    {
+        let nv = nvidia::discover();
+        if !nv.is_empty() {
+            out.retain(|g| g.vendor != "NVIDIA");
+            out.extend(nv);
+        }
     }
     out
 }
@@ -259,6 +407,51 @@ fn read_linux_busy_percent(card_idx: usize) -> Option<f32> {
     let path = format!("/sys/class/drm/card{}/device/gpu_busy_percent", card_idx);
     let s = std::fs::read_to_string(path).ok()?;
     s.trim().parse::<f32>().ok()
+}
+
+// ── AMDGPU sysfs helpers (linux | test for fixture-driven tests) ────────
+
+/// Read a single u64 from `path` (whitespace-trimmed). Pure file IO so
+/// tests can drive it from a tempdir.
+#[cfg(any(target_os = "linux", test))]
+fn read_amdgpu_vram_bytes(path: &std::path::Path) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
+/// AMDGPU exposes hwmon as `device/hwmon/hwmonN/`. Picks the first
+/// `hwmon*` subdir; that's the AMDGPU-managed one (other hwmon
+/// instances live under different parents).
+#[cfg(any(target_os = "linux", test))]
+fn find_amdgpu_hwmon_dir(device_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let hwmon_root = device_path.join("hwmon");
+    let entries = std::fs::read_dir(&hwmon_root).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with("hwmon") {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
+/// Read `temp1_input` (millicelsius) and convert to °C. amdgpu units are
+/// stable across all kernels we care about.
+#[cfg(any(target_os = "linux", test))]
+fn read_hwmon_temp_c(path: &std::path::Path) -> Option<f32> {
+    let raw: i64 = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
+    Some(raw as f32 / 1000.0)
+}
+
+/// Read `power1_average` (microwatts) and convert to W. May read 0 when
+/// the GPU is asleep — propagate as Some(0.0), the UI handles it.
+#[cfg(any(target_os = "linux", test))]
+fn read_hwmon_power_w(path: &std::path::Path) -> Option<f32> {
+    let raw: u64 = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
+    Some(raw as f32 / 1_000_000.0)
 }
 
 #[cfg(target_os = "macos")]
@@ -392,5 +585,87 @@ mod tests {
         assert_eq!(stats[0].device_util_pct as i32, 42);
         assert_eq!(stats[0].renderer_util_pct, 0.0);
         assert_eq!(stats[0].in_use_system_memory, 0);
+    }
+
+    // ── AMDGPU sysfs helpers ── exercised on any host via tempfile ────────
+
+    use super::{
+        find_amdgpu_hwmon_dir, read_amdgpu_vram_bytes, read_hwmon_power_w, read_hwmon_temp_c,
+    };
+    use std::fs;
+
+    #[test]
+    fn amdgpu_vram_parses_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mem_info_vram_total");
+        fs::write(&path, "17163091968\n").unwrap();
+        assert_eq!(read_amdgpu_vram_bytes(&path), Some(17_163_091_968));
+    }
+
+    #[test]
+    fn amdgpu_vram_missing_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_amdgpu_vram_bytes(&dir.path().join("missing")), None);
+    }
+
+    #[test]
+    fn amdgpu_vram_garbage_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mem_info_vram_total");
+        fs::write(&path, "not a number").unwrap();
+        assert_eq!(read_amdgpu_vram_bytes(&path), None);
+    }
+
+    #[test]
+    fn finds_first_hwmon_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let hwmon0 = dir.path().join("hwmon").join("hwmon3");
+        fs::create_dir_all(&hwmon0).unwrap();
+        let found = find_amdgpu_hwmon_dir(dir.path()).unwrap();
+        assert_eq!(found, hwmon0);
+    }
+
+    #[test]
+    fn skips_non_hwmon_entries_in_hwmon_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        // Some kernels stash a `subsystem` symlink in here too.
+        fs::create_dir_all(dir.path().join("hwmon").join("hwmon2")).unwrap();
+        let found = find_amdgpu_hwmon_dir(dir.path()).unwrap();
+        assert!(found
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("hwmon"));
+    }
+
+    #[test]
+    fn no_hwmon_dir_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(find_amdgpu_hwmon_dir(dir.path()), None);
+    }
+
+    #[test]
+    fn hwmon_temp_converts_millicelsius() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("temp1_input");
+        fs::write(&path, "65500\n").unwrap();
+        assert_eq!(read_hwmon_temp_c(&path), Some(65.5));
+    }
+
+    #[test]
+    fn hwmon_power_converts_microwatts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("power1_average");
+        fs::write(&path, "85000000\n").unwrap();
+        assert_eq!(read_hwmon_power_w(&path), Some(85.0));
+    }
+
+    #[test]
+    fn hwmon_power_zero_passes_through() {
+        // GPU asleep — driver returns 0 µW, not "missing".
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("power1_average");
+        fs::write(&path, "0\n").unwrap();
+        assert_eq!(read_hwmon_power_w(&path), Some(0.0));
     }
 }

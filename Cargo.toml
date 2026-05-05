@@ -1,6 +1,6 @@
 [package]
 name = "syswatch"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Single-host, read-only system diagnostics TUI. Twelve tabs covering CPU, memory, disks, processes, GPU, power, services, network, plus a Timeline scrubber and an Insights anomaly engine. Sibling to netwatch."
 license = "MIT"
@@ -40,6 +40,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # in this Cargo.toml — keep it out of commits.
 netwatch-sdk = "0.1"
 
+# Linux NVIDIA support is opt-in: enabling `gpu-nvidia` links libnvidia-ml,
+# which only ships on hosts with the proprietary driver installed.
+nvml-wrapper = { version = "0.12", optional = true }
+
 [dev-dependencies]
 # tempfile lets the Linux power/gpu parsers be exercised on any host by
 # constructing a tempdir-shaped sysfs view. Same pattern netwatch-sdk uses.
@@ -47,7 +51,7 @@ tempfile = "3"
 
 [features]
 default = []
-gpu-nvidia = []
+gpu-nvidia = ["dep:nvml-wrapper"]
 smart = []
 
 [profile.release]

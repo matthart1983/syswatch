@@ -261,6 +261,8 @@ fn parse_macos_pmset_throttle(text: &str) -> u32 {
 }
 
 // Pure file-IO over a &Path — exercisable on any host via tempfile fixtures.
+// Gated to (linux | test) so non-Linux release builds don't warn dead.
+#[cfg(any(target_os = "linux", test))]
 fn parse_linux_battery(path: &std::path::Path) -> BatteryTick {
     let mut bat = BatteryTick::default();
     bat.charge_pct = read_trim(&path.join("capacity"))
@@ -290,6 +292,7 @@ fn parse_linux_battery(path: &std::path::Path) -> BatteryTick {
     bat
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn derive_linux_power_w(path: &std::path::Path) -> Option<f32> {
     // power_now is in microwatts; voltage*current is the fallback.
     if let Some(uw) = read_trim(&path.join("power_now")).and_then(|s| s.parse::<f32>().ok()) {
@@ -300,6 +303,7 @@ fn derive_linux_power_w(path: &std::path::Path) -> Option<f32> {
     Some(v_uv * c_ua.abs() / 1e12)
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn read_trim(p: &std::path::Path) -> Option<String> {
     std::fs::read_to_string(p)
         .ok()

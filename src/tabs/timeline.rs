@@ -65,16 +65,16 @@ fn draw_activity(f: &mut Frame, area: Rect, app: &App) {
     let net = window_normalized(&net_raw, take, net_peak);
 
     let strips = [
-        ("cpu  ", &cpu, p::GREEN),
-        ("mem  ", &mem, p::YELLOW),
-        ("io   ", &io, p::CYAN),
-        ("net  ", &net, p::MAGENTA),
+        ("cpu  ", &cpu, p::status_good()),
+        ("mem  ", &mem, p::status_warn()),
+        ("io   ", &io, p::brand()),
+        ("net  ", &net, p::tx_rate()),
     ];
 
     let mut lines: Vec<Line> = Vec::new();
     for (label, series, color) in strips.iter() {
         let mut spans: Vec<Span> =
-            vec![Span::styled(label.to_string(), Style::default().fg(p::DIM))];
+            vec![Span::styled(label.to_string(), Style::default().fg(p::text_muted()))];
         let line = sparkline(series, *color);
         spans.extend(line.spans);
         // Highlight the scrub cursor inside the strip if applicable.
@@ -85,7 +85,7 @@ fn draw_activity(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(""));
     }
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
@@ -111,7 +111,7 @@ fn mark_cursor(
         let new_content: String = chars.into_iter().collect();
         *spark_span = Span::styled(
             new_content,
-            spark_span.style.fg(p::CYAN).add_modifier(Modifier::BOLD),
+            spark_span.style.fg(p::brand()).add_modifier(Modifier::BOLD),
         );
     }
 }
@@ -126,9 +126,9 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 "No events yet — events appear when insights begin/clear or top procs change.",
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             )]))
-            .style(Style::default().bg(p::BG)),
+            .style(Style::default().bg(p::bg())),
             inner,
         );
         return;
@@ -143,9 +143,9 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
     let take = inner.height.saturating_sub(1) as usize;
     for ev in events.iter().take(take) {
         let color = match ev.kind {
-            EventKind::InsightStart => p::YELLOW,
-            EventKind::InsightClear => p::GREEN,
-            EventKind::TopProcChange => p::CYAN,
+            EventKind::InsightStart => p::status_warn(),
+            EventKind::InsightClear => p::status_good(),
+            EventKind::TopProcChange => p::brand(),
         };
         let kind_label = match ev.kind {
             EventKind::InsightStart => "WARN",
@@ -153,16 +153,16 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
             EventKind::TopProcChange => "PROC",
         };
         lines.push(Line::from(vec![
-            Span::styled(format!("{:>7}s ", ev.age_secs), Style::default().fg(p::DIM)),
+            Span::styled(format!("{:>7}s ", ev.age_secs), Style::default().fg(p::text_muted())),
             Span::styled(
                 format!("{:<5} ", kind_label),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(ev.detail.clone(), Style::default().fg(p::FG)),
+            Span::styled(ev.detail.clone(), Style::default().fg(p::text_primary())),
         ]));
     }
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
@@ -183,20 +183,20 @@ fn draw_scrubber(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let mut line_chars: Vec<(char, ratatui::style::Color, bool)> =
-        (0..bar_w).map(|_| ('\u{2500}', p::FAINT, false)).collect();
+        (0..bar_w).map(|_| ('\u{2500}', p::border(), false)).collect();
     if pos < line_chars.len() {
-        line_chars[pos] = ('\u{25CF}', p::CYAN, true);
+        line_chars[pos] = ('\u{25CF}', p::brand(), true);
     }
     // Mark "now" at the right edge if not the cursor.
     if let Some(last) = line_chars.last_mut() {
         if !last.2 {
-            *last = ('\u{2502}', p::DIM, false);
+            *last = ('\u{2502}', p::text_muted(), false);
         }
     }
     // Mark "oldest" at the left edge if not the cursor.
     if let Some(first) = line_chars.first_mut() {
         if !first.2 && len > 1 {
-            *first = ('\u{2502}', p::DIM, false);
+            *first = ('\u{2502}', p::text_muted(), false);
         }
     }
 
@@ -215,7 +215,7 @@ fn draw_scrubber(f: &mut Frame, area: Rect, app: &App) {
 
     let scrubbed = app.displayed_snap();
     let (status, status_color) = match (app.scrub_offset, scrubbed) {
-        (0, _) => ("LIVE  showing newest tick".into(), p::GREEN),
+        (0, _) => ("LIVE  showing newest tick".into(), p::status_good()),
         (_, Some(snap)) => {
             let ts: chrono::DateTime<chrono::Local> = snap.t.into();
             (
@@ -225,10 +225,10 @@ fn draw_scrubber(f: &mut Frame, area: Rect, app: &App) {
                     app.scrub_offset,
                     len.saturating_sub(1)
                 ) + &format!("    {}", ts.format("%H:%M:%S")),
-                p::CYAN,
+                p::brand(),
             )
         }
-        _ => ("(no session yet)".into(), p::DIM),
+        _ => ("(no session yet)".into(), p::text_muted()),
     };
 
     let info_line = Line::from(vec![Span::styled(
@@ -239,7 +239,7 @@ fn draw_scrubber(f: &mut Frame, area: Rect, app: &App) {
     )]);
 
     f.render_widget(
-        Paragraph::new(vec![bar_line, info_line]).style(Style::default().bg(p::BG)),
+        Paragraph::new(vec![bar_line, info_line]).style(Style::default().bg(p::bg())),
         inner,
     );
 }
@@ -247,6 +247,11 @@ fn draw_scrubber(f: &mut Frame, area: Rect, app: &App) {
 #[derive(Debug, Clone, Copy)]
 enum EventKind {
     InsightStart,
+    /// Reserved for future use. The `derive_events` walk would emit this
+    /// when an insight clears across two consecutive snapshots, but
+    /// recomputing insights per-tick during scrub is too expensive today.
+    /// `draw_events` already has the render arm wired up.
+    #[allow(dead_code)]
     InsightClear,
     TopProcChange,
 }
@@ -327,5 +332,5 @@ fn window_normalized(raw: &[f32], take: usize, max: f32) -> Vec<f32> {
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::DIM).add_modifier(Modifier::BOLD)
+    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
 }

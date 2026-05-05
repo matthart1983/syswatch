@@ -8,11 +8,12 @@ use ratatui::{
 
 use crate::app::{App, Snapshot};
 use crate::ui::{
+    graph::GraphStyle,
     palette as p,
-    widgets::{block_bar, human_bytes, panel},
+    widgets::{block_bar_styled, human_bytes, panel},
 };
 
-pub fn draw(f: &mut Frame, area: Rect, _app: &App, snap: &Snapshot) {
+pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     let v = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -22,12 +23,12 @@ pub fn draw(f: &mut Frame, area: Rect, _app: &App, snap: &Snapshot) {
         ])
         .split(area);
 
-    draw_ram_bar(f, v[0], snap);
-    draw_swap(f, v[1], snap);
+    draw_ram_bar(f, v[0], snap, app.graph_style);
+    draw_swap(f, v[1], snap, app.graph_style);
     draw_top_rss(f, v[2], snap);
 }
 
-fn draw_ram_bar(f: &mut Frame, area: Rect, snap: &Snapshot) {
+fn draw_ram_bar(f: &mut Frame, area: Rect, snap: &Snapshot, style: GraphStyle) {
     let block = panel("RAM");
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -37,36 +38,36 @@ fn draw_ram_bar(f: &mut Frame, area: Rect, snap: &Snapshot) {
     let avail = snap.mem.available_bytes;
     let pct = used as f32 / total as f32;
     let color = if pct >= 0.9 {
-        p::RED
+        p::status_error()
     } else if pct >= 0.7 {
-        p::YELLOW
+        p::status_warn()
     } else {
-        p::GREEN
+        p::status_good()
     };
 
     let header = Line::from(vec![
-        Span::styled("used ", Style::default().fg(p::DIM)),
+        Span::styled("used ", Style::default().fg(p::text_muted())),
         Span::styled(
             human_bytes(used),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" / ", Style::default().fg(p::DIM)),
-        Span::styled(human_bytes(total), Style::default().fg(p::FG)),
+        Span::styled(" / ", Style::default().fg(p::text_muted())),
+        Span::styled(human_bytes(total), Style::default().fg(p::text_primary())),
         Span::styled(
             format!("   ({:>4.1}%)", pct * 100.0),
-            Style::default().fg(p::DIM),
+            Style::default().fg(p::text_muted()),
         ),
-        Span::styled("    available ", Style::default().fg(p::DIM)),
-        Span::styled(human_bytes(avail), Style::default().fg(p::FG)),
+        Span::styled("    available ", Style::default().fg(p::text_muted())),
+        Span::styled(human_bytes(avail), Style::default().fg(p::text_primary())),
     ]);
-    let bar = block_bar(pct, inner.width, color);
+    let bar = block_bar_styled(pct, inner.width, color, style);
     f.render_widget(
-        Paragraph::new(vec![header, Line::from(""), bar]).style(Style::default().bg(p::BG)),
+        Paragraph::new(vec![header, Line::from(""), bar]).style(Style::default().bg(p::bg())),
         inner,
     );
 }
 
-fn draw_swap(f: &mut Frame, area: Rect, snap: &Snapshot) {
+fn draw_swap(f: &mut Frame, area: Rect, snap: &Snapshot, style: GraphStyle) {
     let block = panel("Swap");
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -79,36 +80,36 @@ fn draw_swap(f: &mut Frame, area: Rect, snap: &Snapshot) {
         0.0
     };
     let color = if pct >= 0.75 {
-        p::RED
+        p::status_error()
     } else if pct >= 0.25 {
-        p::YELLOW
+        p::status_warn()
     } else {
-        p::GREEN
+        p::status_good()
     };
 
     let header = if total == 0 {
         Line::from(vec![Span::styled(
             "no swap configured",
-            Style::default().fg(p::DIM),
+            Style::default().fg(p::text_muted()),
         )])
     } else {
         Line::from(vec![
-            Span::styled("used ", Style::default().fg(p::DIM)),
+            Span::styled("used ", Style::default().fg(p::text_muted())),
             Span::styled(
                 human_bytes(used),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" / ", Style::default().fg(p::DIM)),
-            Span::styled(human_bytes(total), Style::default().fg(p::FG)),
+            Span::styled(" / ", Style::default().fg(p::text_muted())),
+            Span::styled(human_bytes(total), Style::default().fg(p::text_primary())),
             Span::styled(
                 format!("   ({:>4.1}%)", pct * 100.0),
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             ),
         ])
     };
-    let bar = block_bar(pct, inner.width, color);
+    let bar = block_bar_styled(pct, inner.width, color, style);
     f.render_widget(
-        Paragraph::new(vec![header, Line::from(""), bar]).style(Style::default().bg(p::BG)),
+        Paragraph::new(vec![header, Line::from(""), bar]).style(Style::default().bg(p::bg())),
         inner,
     );
 }
@@ -125,45 +126,45 @@ fn draw_top_rss(f: &mut Frame, area: Rect, snap: &Snapshot) {
     let mut lines: Vec<Line> = vec![Line::from(vec![
         Span::styled(
             format!("{:>7} ", "PID"),
-            Style::default().fg(p::DIM).add_modifier(Modifier::BOLD),
+            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{:<10} ", "USER"),
-            Style::default().fg(p::DIM).add_modifier(Modifier::BOLD),
+            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{:>10} ", "RSS"),
-            Style::default().fg(p::DIM).add_modifier(Modifier::BOLD),
+            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{:>10} ", "VIRT"),
-            Style::default().fg(p::DIM).add_modifier(Modifier::BOLD),
+            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "COMMAND",
-            Style::default().fg(p::DIM).add_modifier(Modifier::BOLD),
+            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
         ),
     ])];
     for proc_ in sorted.iter().take(take) {
         lines.push(Line::from(vec![
-            Span::styled(format!("{:>7} ", proc_.pid), Style::default().fg(p::FG)),
+            Span::styled(format!("{:>7} ", proc_.pid), Style::default().fg(p::text_primary())),
             Span::styled(
                 format!("{:<10.10} ", proc_.user),
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             ),
             Span::styled(
                 format!("{:>10} ", human_bytes(proc_.mem_rss)),
-                Style::default().fg(p::CYAN),
+                Style::default().fg(p::brand()),
             ),
             Span::styled(
                 format!("{:>10} ", human_bytes(proc_.mem_virt)),
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             ),
-            Span::styled(proc_.name.clone(), Style::default().fg(p::FG)),
+            Span::styled(proc_.name.clone(), Style::default().fg(p::text_primary())),
         ]));
     }
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }

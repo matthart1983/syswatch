@@ -20,15 +20,18 @@ impl<T: Clone> Ring<T> {
         }
         self.inner.push_back(v);
     }
+    #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.inner.iter()
     }
     pub fn len(&self) -> usize {
         self.inner.len()
     }
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
+    #[allow(dead_code)]
     pub fn last(&self) -> Option<&T> {
         self.inner.back()
     }

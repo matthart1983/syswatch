@@ -18,6 +18,7 @@ use crate::collect::{Collector, Ring};
 use crate::insights::{self, Insight};
 use crate::tabs;
 use crate::ui::chrome;
+use crate::ui::graph::GraphStyle;
 
 pub struct Options {
     pub tick_ms: u64,
@@ -251,6 +252,9 @@ pub struct App {
     /// arrow keys; clamped to session length. Affects every tab via
     /// App::displayed_snap.
     pub scrub_offset: usize,
+    /// Chart rendering style. Toggled with `g`. Affects every multi-row
+    /// sparkline tile (CPU/Net/Disks aggregates, Overview KPIs).
+    pub graph_style: GraphStyle,
 }
 
 impl App {
@@ -285,6 +289,7 @@ impl App {
             service_sel: 0,
             insights: Vec::new(),
             scrub_offset: 0,
+            graph_style: GraphStyle::Bars,
         }
     }
 
@@ -296,6 +301,10 @@ impl App {
             (KeyCode::Char('q'), _) => return true,
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
             (KeyCode::Char('p'), _) => self.paused = !self.paused,
+            (KeyCode::Char('g'), _) => self.graph_style = self.graph_style.next(),
+            (KeyCode::Char('t'), _) => {
+                crate::ui::theme::cycle();
+            }
             (KeyCode::Char('1'), _) => self.active = TabId::Overview,
             (KeyCode::Char('2'), _) => self.active = TabId::Cpu,
             (KeyCode::Char('3'), _) => self.active = TabId::Memory,
@@ -451,7 +460,7 @@ fn draw(f: &mut ratatui::Frame, app: &App, snap: &Snapshot) {
         height: chunks[2].height,
     };
     tabs::draw(f, body, app, snap);
-    chrome::draw_footer(f, chunks[3]);
+    chrome::draw_footer(f, chunks[3], app.graph_style);
 }
 
 #[cfg(test)]

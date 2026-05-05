@@ -42,9 +42,9 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, _snap: &Snapshot) {
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             "  Insights are read-only suggestions — they never modify processes, files, or services.",
-            Style::default().fg(p::DIM),
+            Style::default().fg(p::text_muted()),
         )]))
-        .style(Style::default().bg(p::BG)),
+        .style(Style::default().bg(p::bg())),
         footer_area,
     );
 }
@@ -65,16 +65,16 @@ fn draw_strip(f: &mut Frame, area: Rect, insights: &[Insight]) {
     let active = crit + warn;
 
     let dot_color = if crit > 0 {
-        p::RED
+        p::status_error()
     } else if warn > 0 {
-        p::YELLOW
+        p::status_warn()
     } else {
-        p::GREEN
+        p::status_good()
     };
     let summary = if active == 0 {
         Span::styled(
             "0 active  — system nominal",
-            Style::default().fg(p::GREEN).add_modifier(Modifier::BOLD),
+            Style::default().fg(p::status_good()).add_modifier(Modifier::BOLD),
         )
     } else {
         Span::styled(
@@ -86,9 +86,9 @@ fn draw_strip(f: &mut Frame, area: Rect, insights: &[Insight]) {
     let line = Line::from(vec![
         Span::styled(" \u{25cf} ", Style::default().fg(dot_color)),
         summary,
-        Span::styled(breakdown, Style::default().fg(p::DIM)),
+        Span::styled(breakdown, Style::default().fg(p::text_muted())),
     ]);
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(p::BG)), area);
+    f.render_widget(Paragraph::new(line).style(Style::default().bg(p::bg())), area);
 }
 
 fn draw_cards(f: &mut Frame, area: Rect, insights: &[Insight]) {
@@ -114,9 +114,9 @@ fn draw_cards(f: &mut Frame, area: Rect, insights: &[Insight]) {
 
 fn draw_card(f: &mut Frame, area: Rect, ins: &Insight) {
     let (sev_fg, sev_bg) = match ins.severity {
-        Severity::Crit => (p::RED, p::ERR_BG),
-        Severity::Warn => (p::YELLOW, p::WARN_BG),
-        Severity::Info => (p::CYAN, p::SEL_BG),
+        Severity::Crit => (p::status_error(), p::err_bg()),
+        Severity::Warn => (p::status_warn(), p::warn_bg()),
+        Severity::Info => (p::brand(), p::selection_bg()),
     };
 
     // Render lines manually so we can paint the left stripe.
@@ -127,12 +127,12 @@ fn draw_card(f: &mut Frame, area: Rect, ins: &Insight) {
     // Top border
     let top = Line::from(vec![Span::styled(
         format!("\u{250C}{}\u{2510}", "\u{2500}".repeat(w.saturating_sub(2))),
-        Style::default().fg(p::FAINT),
+        Style::default().fg(p::border()),
     )]);
     // Bottom border (only rendered if there's room)
     let bot = Line::from(vec![Span::styled(
         format!("\u{2514}{}\u{2518}", "\u{2500}".repeat(w.saturating_sub(2))),
-        Style::default().fg(p::FAINT),
+        Style::default().fg(p::border()),
     )]);
 
     let mut lines: Vec<Line> = Vec::with_capacity(rows);
@@ -159,7 +159,7 @@ fn draw_card(f: &mut Frame, area: Rect, ins: &Insight) {
         Span::raw(" "),
         Span::styled(
             title_truncated,
-            Style::default().fg(p::FG).add_modifier(Modifier::BOLD),
+            Style::default().fg(p::text_primary()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             pad_right(
@@ -170,9 +170,9 @@ fn draw_card(f: &mut Frame, area: Rect, ins: &Insight) {
                     + truncate(&ins.title, title_w).chars().count(),
                 1,
             ),
-            Style::default().bg(p::BG),
+            Style::default().bg(p::bg()),
         ),
-        Span::styled("\u{2502}", Style::default().fg(p::FAINT)),
+        Span::styled("\u{2502}", Style::default().fg(p::border())),
     ]));
 
     // Body lines (up to 3)
@@ -181,7 +181,7 @@ fn draw_card(f: &mut Frame, area: Rect, ins: &Insight) {
             break;
         }
         let text = ins.body.get(i).cloned().unwrap_or_default();
-        let body_color = if i == 0 { p::FG } else { p::DIM };
+        let body_color = if i == 0 { p::text_primary() } else { p::text_muted() };
         let truncated = truncate(&text, w.saturating_sub(4));
         lines.push(Line::from(vec![
             Span::styled("\u{2503}", Style::default().fg(sev_fg)),
@@ -189,9 +189,9 @@ fn draw_card(f: &mut Frame, area: Rect, ins: &Insight) {
             Span::styled(truncated.clone(), Style::default().fg(body_color)),
             Span::styled(
                 pad_right(w, 1 + 2 + truncated.chars().count(), 1),
-                Style::default().bg(p::BG),
+                Style::default().bg(p::bg()),
             ),
-            Span::styled("\u{2502}", Style::default().fg(p::FAINT)),
+            Span::styled("\u{2502}", Style::default().fg(p::border())),
         ]));
     }
 
@@ -202,19 +202,19 @@ fn draw_card(f: &mut Frame, area: Rect, ins: &Insight) {
         lines.push(Line::from(vec![
             Span::styled("\u{2503}", Style::default().fg(sev_fg)),
             Span::raw("  "),
-            Span::styled(truncated.clone(), Style::default().fg(p::CYAN)),
+            Span::styled(truncated.clone(), Style::default().fg(p::brand())),
             Span::styled(
                 pad_right(w, 1 + 2 + truncated.chars().count(), 1),
-                Style::default().bg(p::BG),
+                Style::default().bg(p::bg()),
             ),
-            Span::styled("\u{2502}", Style::default().fg(p::FAINT)),
+            Span::styled("\u{2502}", Style::default().fg(p::border())),
         ]));
     }
 
     lines.push(bot);
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         area,
     );
 }

@@ -9,8 +9,9 @@ use ratatui::{
 use crate::app::{App, Snapshot};
 use crate::insights::Severity;
 use crate::ui::{
+    graph::{self, GraphStyle},
     palette as p,
-    widgets::{block_bar, human_bytes, human_rate, panel, sparkline},
+    widgets::{block_bar_styled, human_bytes, human_rate, panel},
 };
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
@@ -40,6 +41,7 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         ])
         .split(area);
 
+    let style = app.graph_style;
     kpi_tile(
         f,
         cols[0],
@@ -48,6 +50,7 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         kpi_color(snap.cpu.usage_pct, 60.0, 85.0),
         &app.history.cpu.to_vec(),
         100.0,
+        style,
     );
     let mem_pct = if snap.mem.total_bytes > 0 {
         100.0 * snap.mem.used_bytes as f32 / snap.mem.total_bytes as f32
@@ -67,6 +70,7 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
             .map(|v| v * 100.0)
             .collect::<Vec<f32>>(),
         100.0,
+        style,
     );
     let swap_pct = if snap.mem.swap_total_bytes > 0 {
         100.0 * snap.mem.swap_used_bytes as f32 / snap.mem.swap_total_bytes as f32
@@ -81,6 +85,7 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         kpi_color(swap_pct, 25.0, 75.0),
         &[],
         100.0,
+        style,
     );
     let io = snap.disk_io.read_rate + snap.disk_io.write_rate;
     kpi_tile(
@@ -88,7 +93,7 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         cols[3],
         "DISK IO",
         human_rate(io),
-        p::CYAN,
+        p::brand(),
         &app.history
             .io_rate
             .to_vec()
@@ -96,6 +101,7 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
             .map(|v| *v as f32)
             .collect::<Vec<f32>>(),
         max_or(&app.history.io_rate.to_vec(), 1.0) as f32,
+        style,
     );
     let net: f64 = snap.net.iter().map(|i| i.rx_rate + i.tx_rate).sum();
     kpi_tile(
@@ -103,7 +109,7 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         cols[4],
         "NET",
         human_rate(net),
-        p::CYAN,
+        p::brand(),
         &app.history
             .net_rate
             .to_vec()
@@ -111,6 +117,7 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
             .map(|v| *v as f32)
             .collect::<Vec<f32>>(),
         max_or(&app.history.net_rate.to_vec(), 1.0) as f32,
+        style,
     );
 }
 
@@ -122,6 +129,7 @@ fn kpi_tile(
     accent: ratatui::style::Color,
     series: &[f32],
     series_max: f32,
+    style: GraphStyle,
 ) {
     let block = panel(label);
     let inner = block.inner(area);
@@ -140,10 +148,10 @@ fn kpi_tile(
         value,
         Style::default().fg(accent).add_modifier(Modifier::BOLD),
     )]))
-    .style(Style::default().bg(p::BG));
+    .style(Style::default().bg(p::bg()));
     f.render_widget(val, h[0]);
 
-    let bar = block_bar(
+    let bar = block_bar_styled(
         if series_max > 0.0 {
             series.last().copied().unwrap_or(0.0) / series_max
         } else {
@@ -151,35 +159,27 @@ fn kpi_tile(
         },
         h[1].width,
         accent,
+        style,
     );
-    f.render_widget(Paragraph::new(bar).style(Style::default().bg(p::BG)), h[1]);
+    f.render_widget(Paragraph::new(bar).style(Style::default().bg(p::bg())), h[1]);
 
     if !series.is_empty() && series_max > 0.0 {
         let normalized: Vec<f32> = series.iter().map(|v| (v / series_max).min(1.0)).collect();
-        let take = h[2].width as usize;
-        let slice = if normalized.len() > take {
-            &normalized[normalized.len() - take..]
-        } else {
-            &normalized[..]
-        };
-        f.render_widget(
-            Paragraph::new(sparkline(slice, p::DIM)).style(Style::default().bg(p::BG)),
-            h[2],
-        );
+        graph::render(f, h[2], &normalized, style, accent);
     }
 }
 
-fn draw_middle(f: &mut Frame, area: Rect, _app: &App, snap: &Snapshot) {
+fn draw_middle(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
         .split(area);
 
-    draw_per_core(f, cols[0], snap);
+    draw_per_core(f, cols[0], snap, app.graph_style);
     draw_top_procs(f, cols[1], snap);
 }
 
-fn draw_per_core(f: &mut Frame, area: Rect, snap: &Snapshot) {
+fn draw_per_core(f: &mut Frame, area: Rect, snap: &Snapshot, style: GraphStyle) {
     let block = panel("Per-core CPU");
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -187,20 +187,20 @@ fn draw_per_core(f: &mut Frame, area: Rect, snap: &Snapshot) {
     let mut lines: Vec<Line> = Vec::new();
     for (i, pct) in snap.cpu.per_core.iter().enumerate() {
         let color = kpi_color(*pct, 60.0, 85.0);
-        let bar = block_bar(*pct / 100.0, inner.width.saturating_sub(12), color);
+        let bar = block_bar_styled(*pct / 100.0, inner.width.saturating_sub(12), color, style);
         let mut spans = vec![Span::styled(
             format!("c{:>2} ", i),
-            Style::default().fg(p::DIM),
+            Style::default().fg(p::text_muted()),
         )];
         spans.extend(bar.spans);
         spans.push(Span::styled(
             format!(" {:>3.0}%", pct),
-            Style::default().fg(p::FG),
+            Style::default().fg(p::text_primary()),
         ));
         lines.push(Line::from(spans));
     }
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
@@ -217,7 +217,7 @@ fn draw_top_procs(f: &mut Frame, area: Rect, snap: &Snapshot) {
         Cell::from("RSS"),
         Cell::from("COMMAND"),
     ])
-    .style(Style::default().fg(p::DIM).add_modifier(Modifier::BOLD));
+    .style(Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD));
 
     let rows = snap
         .procs
@@ -241,9 +241,12 @@ fn draw_top_procs(f: &mut Frame, area: Rect, snap: &Snapshot) {
         Constraint::Length(10),
         Constraint::Min(0),
     ];
+    // Cells without an explicit fg inherit this style's fg. Without setting
+    // it, cells render with `Color::Reset` (terminal default fg), which on a
+    // dark-terminal user with the light theme picks the wrong color.
     let table = Table::new(rows, widths)
         .header(header)
-        .style(Style::default().bg(p::BG));
+        .style(Style::default().fg(p::text_primary()).bg(p::bg()));
     f.render_widget(table, inner);
 }
 
@@ -266,9 +269,9 @@ fn draw_insights_strip(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 "No anomalies in CPU, Memory, Disks, Procs, Net.",
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             )]))
-            .style(Style::default().bg(p::BG)),
+            .style(Style::default().bg(p::bg())),
             inner,
         );
         return;
@@ -281,9 +284,9 @@ fn draw_insights_strip(f: &mut Frame, area: Rect, app: &App) {
         .take(take)
         .map(|ins| {
             let (color, label) = match ins.severity {
-                Severity::Crit => (p::RED, "CRIT"),
-                Severity::Warn => (p::YELLOW, "WARN"),
-                Severity::Info => (p::CYAN, "INFO"),
+                Severity::Crit => (p::status_error(), "CRIT"),
+                Severity::Warn => (p::status_warn(), "WARN"),
+                Severity::Info => (p::brand(), "INFO"),
             };
             Line::from(vec![
                 Span::styled(
@@ -291,28 +294,28 @@ fn draw_insights_strip(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(ins.title.clone(), Style::default().fg(p::FG)),
+                Span::styled(ins.title.clone(), Style::default().fg(p::text_primary())),
                 Span::styled(
                     format!("   \u{2192} {}", ins.suggested_tab.title()),
-                    Style::default().fg(p::DIM),
+                    Style::default().fg(p::text_muted()),
                 ),
             ])
         })
         .collect();
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
 
 fn kpi_color(v: f32, warn: f32, crit: f32) -> ratatui::style::Color {
     if v >= crit {
-        p::RED
+        p::status_error()
     } else if v >= warn {
-        p::YELLOW
+        p::status_warn()
     } else {
-        p::GREEN
+        p::status_good()
     }
 }
 

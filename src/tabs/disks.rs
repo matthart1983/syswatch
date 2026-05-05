@@ -9,8 +9,9 @@ use ratatui::{
 use crate::app::{App, Snapshot};
 use crate::collect::DiskUsageTick;
 use crate::ui::{
+    graph::{self, GraphStyle},
     palette as p,
-    widgets::{block_bar, human_bytes, human_rate, panel, sparkline},
+    widgets::{block_bar_styled, human_bytes, human_rate, panel},
 };
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
@@ -19,11 +20,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         .constraints([Constraint::Min(0), Constraint::Length(7)])
         .split(area);
 
-    draw_devices(f, v[0], snap);
+    draw_devices(f, v[0], snap, app.graph_style);
     draw_throughput(f, v[1], app, snap);
 }
 
-fn draw_devices(f: &mut Frame, area: Rect, snap: &Snapshot) {
+fn draw_devices(f: &mut Frame, area: Rect, snap: &Snapshot, style: GraphStyle) {
     // Filter to device-backed mounts only (skip /dev, /proc, tmpfs, etc).
     let devices: Vec<&DiskUsageTick> = snap
         .disks
@@ -56,7 +57,7 @@ fn draw_devices(f: &mut Frame, area: Rect, snap: &Snapshot) {
     f.render_widget(block, area);
 
     let header = Line::from(vec![
-        Span::styled("   ", Style::default().fg(p::DIM)),
+        Span::styled("   ", Style::default().fg(p::text_muted())),
         Span::styled(format!("{:<28} ", "DEVICE"), header_style()),
         Span::styled(format!("{:<32} ", "MOUNT"), header_style()),
         Span::styled(format!("{:<8} ", "FS"), header_style()),
@@ -73,18 +74,18 @@ fn draw_devices(f: &mut Frame, area: Rect, snap: &Snapshot) {
         let pct = (d.usage_pct / 100.0).clamp(0.0, 1.0);
         let dot_color = bar_color(d.usage_pct);
         let used_color = bar_color(d.usage_pct);
-        let bar = block_bar(pct, bar_w, dot_color);
+        let bar = block_bar_styled(pct, bar_w, dot_color, style);
         let mut spans = vec![
             Span::styled(" \u{25cf} ", Style::default().fg(dot_color)),
-            Span::styled(format!("{:<28.28} ", d.device), Style::default().fg(p::FG)),
+            Span::styled(format!("{:<28.28} ", d.device), Style::default().fg(p::text_primary())),
             Span::styled(
                 format!("{:<32.32} ", d.mount_point),
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             ),
-            Span::styled(format!("{:<8.8} ", d.fs_type), Style::default().fg(p::CYAN)),
+            Span::styled(format!("{:<8.8} ", d.fs_type), Style::default().fg(p::brand())),
             Span::styled(
                 format!("{:>9} ", human_bytes(d.total_bytes)),
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             ),
             Span::styled(
                 format!("{:>5.1}% ", d.usage_pct),
@@ -97,11 +98,11 @@ fn draw_devices(f: &mut Frame, area: Rect, snap: &Snapshot) {
     if devices.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             "No device-backed mounts detected.",
-            Style::default().fg(p::DIM),
+            Style::default().fg(p::text_muted()),
         )]));
     }
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
@@ -129,67 +130,55 @@ fn draw_throughput(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(inner);
 
-    let take = cols[0].width as usize;
-    let slice: Vec<f32> = if normalized.len() > take {
-        normalized[normalized.len() - take..].to_vec()
-    } else {
-        normalized
-    };
-    let lines: Vec<Line> = (0..cols[0].height)
-        .map(|_| sparkline(&slice, p::CYAN))
-        .collect();
-    f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
-        cols[0],
-    );
+    graph::render(f, cols[0], &normalized, app.graph_style, p::brand());
 
     let counters = vec![
         Line::from(vec![
-            Span::styled("read   ", Style::default().fg(p::DIM)),
+            Span::styled("read   ", Style::default().fg(p::text_muted())),
             Span::styled(
                 human_rate(snap.disk_io.read_rate),
-                Style::default().fg(p::GREEN).add_modifier(Modifier::BOLD),
+                Style::default().fg(p::status_good()).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled("write  ", Style::default().fg(p::DIM)),
+            Span::styled("write  ", Style::default().fg(p::text_muted())),
             Span::styled(
                 human_rate(snap.disk_io.write_rate),
-                Style::default().fg(p::CYAN).add_modifier(Modifier::BOLD),
+                Style::default().fg(p::brand()).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled("peak   ", Style::default().fg(p::DIM)),
-            Span::styled(human_rate(peak as f64), Style::default().fg(p::FG)),
+            Span::styled("peak   ", Style::default().fg(p::text_muted())),
+            Span::styled(human_rate(peak as f64), Style::default().fg(p::text_primary())),
         ]),
         Line::from(vec![
-            Span::styled("session", Style::default().fg(p::DIM)),
+            Span::styled("session", Style::default().fg(p::text_muted())),
             Span::styled(
                 format!(
                     " {} read / {} written",
                     human_bytes(snap.disk_io.read_bytes_total),
                     human_bytes(snap.disk_io.write_bytes_total)
                 ),
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             ),
         ]),
     ];
     f.render_widget(
-        Paragraph::new(counters).style(Style::default().bg(p::BG)),
+        Paragraph::new(counters).style(Style::default().bg(p::bg())),
         cols[1],
     );
 }
 
 fn bar_color(used_pct: f32) -> ratatui::style::Color {
     if used_pct >= 90.0 {
-        p::RED
+        p::status_error()
     } else if used_pct >= 70.0 {
-        p::YELLOW
+        p::status_warn()
     } else {
-        p::GREEN
+        p::status_good()
     }
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::DIM).add_modifier(Modifier::BOLD)
+    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
 }

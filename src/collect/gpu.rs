@@ -13,8 +13,10 @@
 
 use crate::collect::model::GpuTick;
 
+#[cfg(target_os = "macos")]
 const HINT_MACOS_TEMP_POWER: &str =
     "temperature + per-rail power need `sudo powermetrics --samplers gpu_power` (deferred)";
+#[cfg(target_os = "linux")]
 const HINT_LINUX_GENERIC: &str =
     "driver doesn't expose gpu_busy_percent; install nvml or amdgpu-tools";
 

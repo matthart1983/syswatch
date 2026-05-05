@@ -1,9 +1,10 @@
 use ratatui::{
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders},
 };
 
+use crate::ui::graph::GraphStyle;
 use crate::ui::palette as p;
 
 /// Standard panel block: faint borders, dim title, BG fill.
@@ -14,40 +15,70 @@ pub fn panel(title: impl Into<String>) -> Block<'static> {
     let title: String = title.into();
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(p::FAINT))
+        .border_style(Style::default().fg(p::border()))
         .title(Span::styled(
             format!(" {} ", title),
-            Style::default().fg(p::DIM),
+            Style::default().fg(p::text_muted()),
         ))
-        .style(Style::default().bg(p::BG))
+        .style(Style::default().bg(p::bg()))
 }
 
 /// Render a single horizontal block-bar of `width` cells filling `pct` (0..=1).
-/// Uses the eighth-block characters for sub-cell precision.
-pub fn block_bar(pct: f32, width: u16, color: ratatui::style::Color) -> Line<'static> {
+/// `Bars` style uses eighth-block characters (smooth solid fill);
+/// `Dots` uses the btop-style braille progression for a textured look
+/// that matches the line graph.
+pub fn block_bar_styled(
+    pct: f32,
+    width: u16,
+    color: ratatui::style::Color,
+    style: GraphStyle,
+) -> Line<'static> {
     let pct = pct.clamp(0.0, 1.0);
     let total_eighths = (width as f32 * 8.0 * pct).round() as u32;
     let full = (total_eighths / 8) as u16;
     let rem = (total_eighths % 8) as u8;
+
+    // 9-state glyph tables: index 0 = empty (used for padding), 8 = full,
+    // 1..=7 = partial fill levels matching `rem`.
+    const BARS: [char; 9] = [
+        ' ',
+        '\u{258F}', // ▏ 1/8
+        '\u{258E}', // ▎ 2/8
+        '\u{258D}', // ▍ 3/8
+        '\u{258C}', // ▌ 4/8
+        '\u{258B}', // ▋ 5/8
+        '\u{258A}', // ▊ 6/8
+        '\u{2589}', // ▉ 7/8
+        '\u{2588}', // █ full
+    ];
+    // btop braille progression: left column fills bottom-up, then right
+    // column. 8 partial states + empty = 9.
+    const DOTS: [char; 9] = [
+        '\u{2800}', // ⠀ empty
+        '\u{2840}', // ⡀ 1/8
+        '\u{2844}', // ⡄ 2/8
+        '\u{2846}', // ⡆ 3/8
+        '\u{2847}', // ⡇ 4/8 (full left column)
+        '\u{28C7}', // ⣇ 5/8
+        '\u{28E7}', // ⣧ 6/8
+        '\u{28F7}', // ⣷ 7/8
+        '\u{28FF}', // ⣿ full
+    ];
+    let glyphs = match style {
+        GraphStyle::Bars => &BARS,
+        GraphStyle::Dots => &DOTS,
+    };
+
     let mut s = String::new();
     for _ in 0..full {
-        s.push('\u{2588}');
+        s.push(glyphs[8]);
     }
     if full < width && rem > 0 {
-        s.push(match rem {
-            1 => '\u{258F}',
-            2 => '\u{258E}',
-            3 => '\u{258D}',
-            4 => '\u{258C}',
-            5 => '\u{258B}',
-            6 => '\u{258A}',
-            7 => '\u{2589}',
-            _ => ' ',
-        });
+        s.push(glyphs[rem as usize]);
     }
     let pad = width.saturating_sub(s.chars().count() as u16);
     for _ in 0..pad {
-        s.push(' ');
+        s.push(glyphs[0]);
     }
     Line::from(vec![Span::styled(s, Style::default().fg(color))])
 }
@@ -67,14 +98,6 @@ pub fn sparkline(samples: &[f32], color: ratatui::style::Color) -> Line<'static>
         })
         .collect();
     Line::from(vec![Span::styled(s, Style::default().fg(color))])
-}
-
-/// Status badge with bold text on a tinted background. Use for [OK]/[WARN]/[CRIT].
-pub fn badge(text: &str, fg: ratatui::style::Color, bg: ratatui::style::Color) -> Span<'static> {
-    Span::styled(
-        format!(" {} ", text),
-        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
-    )
 }
 
 pub fn human_bytes(b: u64) -> String {

@@ -71,6 +71,7 @@ impl Collector {
         }
     }
 
+    #[allow(dead_code)]
     pub fn host(&self) -> &HostInfo {
         &self.host
     }

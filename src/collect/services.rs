@@ -121,6 +121,7 @@ pub fn parse_launchctl_list(text: &str) -> Vec<ServiceTick> {
     out
 }
 
+#[cfg(any(target_os = "linux", test))]
 pub fn parse_systemctl_list(text: &str) -> Vec<ServiceTick> {
     let mut out = Vec::new();
     for line in text.lines() {

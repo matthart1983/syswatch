@@ -29,7 +29,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
 fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     let (running, idle, failed, unknown) = counts(&snap.services);
     let mut spans: Vec<Span> = Vec::new();
-    spans.push(Span::styled(" sort ", Style::default().fg(p::DIM)));
+    spans.push(Span::styled(" sort ", Style::default().fg(p::text_muted())));
     for s in ServiceSort::ALL.iter() {
         let active = *s == app.service_sort;
         let label = format!(" {} ", s.label());
@@ -37,43 +37,43 @@ fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
             spans.push(Span::styled(
                 label,
                 Style::default()
-                    .fg(p::CYAN)
-                    .bg(p::SEL_BG)
+                    .fg(p::brand())
+                    .bg(p::selection_bg())
                     .add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled("\u{25BC} ", Style::default().fg(p::CYAN)));
+            spans.push(Span::styled("\u{25BC} ", Style::default().fg(p::brand())));
         } else {
-            spans.push(Span::styled(label, Style::default().fg(p::FG)));
+            spans.push(Span::styled(label, Style::default().fg(p::text_primary())));
             spans.push(Span::raw(" "));
         }
     }
     spans.push(Span::raw("    "));
     spans.push(Span::styled(
         format!("{} total  ", snap.services.len()),
-        Style::default().fg(p::DIM),
+        Style::default().fg(p::text_muted()),
     ));
     spans.push(Span::styled(
         format!("{} running  ", running),
-        Style::default().fg(p::GREEN).add_modifier(Modifier::BOLD),
+        Style::default().fg(p::status_good()).add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(
         format!("{} idle  ", idle),
-        Style::default().fg(p::DIM),
+        Style::default().fg(p::text_muted()),
     ));
     spans.push(Span::styled(
         format!("{} failed  ", failed),
         Style::default()
-            .fg(if failed > 0 { p::RED } else { p::DIM })
+            .fg(if failed > 0 { p::status_error() } else { p::text_muted() })
             .add_modifier(Modifier::BOLD),
     ));
     if unknown > 0 {
         spans.push(Span::styled(
             format!("{} unknown", unknown),
-            Style::default().fg(p::DIM),
+            Style::default().fg(p::text_muted()),
         ));
     }
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(p::BG)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(p::bg())),
         area,
     );
 }
@@ -87,9 +87,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, services: &[ServiceTick]) {
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 "No services reported (collector not yet sampled or platform unsupported).",
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             )]))
-            .style(Style::default().bg(p::BG)),
+            .style(Style::default().bg(p::bg())),
             inner,
         );
         return;
@@ -111,7 +111,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, services: &[ServiceTick]) {
     for (i, svc) in services[start..end].iter().enumerate() {
         let abs = start + i;
         let selected = abs == sel_clamped;
-        let row_bg = if selected { p::SEL_BG } else { p::BG };
+        let row_bg = if selected { p::selection_bg() } else { p::bg() };
         let (status_color, status_label) = status_style(svc.status);
         let pid_text = svc.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
         let exit_text = svc
@@ -119,9 +119,9 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, services: &[ServiceTick]) {
             .map(|c| c.to_string())
             .unwrap_or_else(|| "—".into());
         let exit_color = match svc.exit_code {
-            Some(c) if c < 0 => p::YELLOW, // killed by signal — common on macOS
-            Some(c) if c > 0 => p::RED,
-            _ => p::DIM,
+            Some(c) if c < 0 => p::status_warn(), // killed by signal — common on macOS
+            Some(c) if c > 0 => p::status_error(),
+            _ => p::text_muted(),
         };
         lines.push(Line::from(vec![
             Span::styled(
@@ -133,13 +133,13 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, services: &[ServiceTick]) {
             ),
             Span::styled(
                 format!("{:>7} ", pid_text),
-                Style::default().fg(p::FG).bg(row_bg),
+                Style::default().fg(p::text_primary()).bg(row_bg),
             ),
             Span::styled(
                 format!("{:>5} ", exit_text),
                 Style::default().fg(exit_color).bg(row_bg),
             ),
-            Span::styled(svc.name.clone(), Style::default().fg(p::FG).bg(row_bg)),
+            Span::styled(svc.name.clone(), Style::default().fg(p::text_primary()).bg(row_bg)),
             Span::styled(
                 fill_remainder(inner.width as usize, &svc.name),
                 Style::default().bg(row_bg),
@@ -147,7 +147,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, services: &[ServiceTick]) {
         ]));
     }
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
@@ -165,7 +165,7 @@ fn draw_detail(f: &mut Frame, area: Rect, services: &[ServiceTick], sel: usize) 
     let (status_color, status_label) = status_style(svc.status);
     let lines = vec![
         Line::from(vec![
-            Span::styled(format!("{:<10} ", "status"), Style::default().fg(p::DIM)),
+            Span::styled(format!("{:<10} ", "status"), Style::default().fg(p::text_muted())),
             Span::styled(
                 status_label,
                 Style::default()
@@ -176,29 +176,29 @@ fn draw_detail(f: &mut Frame, area: Rect, services: &[ServiceTick], sel: usize) 
         kv(
             "pid",
             svc.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into()),
-            p::FG,
+            p::text_primary(),
         ),
         kv(
             "exit code",
             svc.exit_code
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "—".into()),
-            p::FG,
+            p::text_primary(),
         ),
-        kv("notes", svc.detail.clone(), p::DIM),
+        kv("notes", svc.detail.clone(), p::text_muted()),
     ];
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
 
 fn status_style(s: ServiceStatus) -> (ratatui::style::Color, &'static str) {
     match s {
-        ServiceStatus::Running => (p::GREEN, "RUN"),
-        ServiceStatus::Idle => (p::DIM, "IDLE"),
-        ServiceStatus::Failed => (p::RED, "FAIL"),
-        ServiceStatus::Unknown => (p::FAINT, "?"),
+        ServiceStatus::Running => (p::status_good(), "RUN"),
+        ServiceStatus::Idle => (p::text_muted(), "IDLE"),
+        ServiceStatus::Failed => (p::status_error(), "FAIL"),
+        ServiceStatus::Unknown => (p::border(), "?"),
     }
 }
 
@@ -244,7 +244,7 @@ fn sort_services(services: &[ServiceTick], key: ServiceSort) -> Vec<ServiceTick>
 
 fn kv(k: &str, v: String, val_color: ratatui::style::Color) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{:<10} ", k), Style::default().fg(p::DIM)),
+        Span::styled(format!("{:<10} ", k), Style::default().fg(p::text_muted())),
         Span::styled(v, Style::default().fg(val_color)),
     ])
 }
@@ -260,7 +260,7 @@ fn fill_remainder(width: usize, used: &str) -> String {
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::DIM).add_modifier(Modifier::BOLD)
+    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]

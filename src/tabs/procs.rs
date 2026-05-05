@@ -31,7 +31,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
 
 fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     let mut spans: Vec<Span> = Vec::new();
-    spans.push(Span::styled(" sort ", Style::default().fg(p::DIM)));
+    spans.push(Span::styled(" sort ", Style::default().fg(p::text_muted())));
     for s in ProcSort::ALL.iter() {
         let active = *s == app.proc_sort;
         let label = format!(" {} ", s.label());
@@ -39,13 +39,13 @@ fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
             spans.push(Span::styled(
                 label,
                 Style::default()
-                    .fg(p::CYAN)
-                    .bg(p::SEL_BG)
+                    .fg(p::brand())
+                    .bg(p::selection_bg())
                     .add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled("\u{25BC} ", Style::default().fg(p::CYAN)));
+            spans.push(Span::styled("\u{25BC} ", Style::default().fg(p::brand())));
         } else {
-            spans.push(Span::styled(label, Style::default().fg(p::FG)));
+            spans.push(Span::styled(label, Style::default().fg(p::text_primary())));
             spans.push(Span::raw(" "));
         }
     }
@@ -54,10 +54,10 @@ fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
             "    {} procs   press s to cycle sort, ↑/↓ select",
             snap.procs.len()
         ),
-        Style::default().fg(p::DIM),
+        Style::default().fg(p::text_muted()),
     ));
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(p::BG)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(p::bg())),
         area,
     );
 }
@@ -89,39 +89,39 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, procs: &[ProcTick]) {
     for (i, proc_) in procs[start..end].iter().enumerate() {
         let abs = start + i;
         let selected = abs == sel_clamped;
-        let row_bg = if selected { p::SEL_BG } else { p::BG };
+        let row_bg = if selected { p::selection_bg() } else { p::bg() };
         let dot_color = if proc_.cpu_pct >= 30.0 {
-            p::YELLOW
+            p::status_warn()
         } else if matches!(proc_.state, 'R') {
-            p::GREEN
+            p::status_good()
         } else if matches!(proc_.state, 'Z') {
-            p::RED
+            p::status_error()
         } else {
-            p::FAINT
+            p::border()
         };
         let cpu_color = if proc_.cpu_pct >= 30.0 {
-            p::YELLOW
+            p::status_warn()
         } else {
-            p::FG
+            p::text_primary()
         };
         let state_color = match proc_.state {
-            'R' => p::GREEN,
-            'S' | 'I' => p::FG,
-            'Z' => p::RED,
-            _ => p::DIM,
+            'R' => p::status_good(),
+            'S' | 'I' => p::text_primary(),
+            'Z' => p::status_error(),
+            _ => p::text_muted(),
         };
         let spans = vec![
             Span::styled(
                 format!("{:>7} ", proc_.pid),
-                Style::default().fg(p::FG).bg(row_bg),
+                Style::default().fg(p::text_primary()).bg(row_bg),
             ),
             Span::styled(
                 format!("{:>7} ", proc_.ppid),
-                Style::default().fg(p::DIM).bg(row_bg),
+                Style::default().fg(p::text_muted()).bg(row_bg),
             ),
             Span::styled(
                 format!("{:<14.14} ", proc_.user),
-                Style::default().fg(p::DIM).bg(row_bg),
+                Style::default().fg(p::text_muted()).bg(row_bg),
             ),
             Span::styled(
                 format!("{:>5.1} ", proc_.cpu_pct),
@@ -129,11 +129,11 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, procs: &[ProcTick]) {
             ),
             Span::styled(
                 format!("{:>9} ", human_bytes(proc_.mem_rss)),
-                Style::default().fg(p::FG).bg(row_bg),
+                Style::default().fg(p::text_primary()).bg(row_bg),
             ),
             Span::styled(
                 format!("{:>9} ", human_bytes(proc_.mem_virt)),
-                Style::default().fg(p::DIM).bg(row_bg),
+                Style::default().fg(p::text_muted()).bg(row_bg),
             ),
             Span::styled(
                 format!(" {:<4} ", proc_.state),
@@ -145,10 +145,10 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, procs: &[ProcTick]) {
             Span::styled(
                 format!("{:>11} ", human_rate(proc_.io_rate)),
                 Style::default()
-                    .fg(if proc_.io_rate > 0.0 { p::CYAN } else { p::DIM })
+                    .fg(if proc_.io_rate > 0.0 { p::brand() } else { p::text_muted() })
                     .bg(row_bg),
             ),
-            Span::styled(proc_.name.clone(), Style::default().fg(p::FG).bg(row_bg)),
+            Span::styled(proc_.name.clone(), Style::default().fg(p::text_primary()).bg(row_bg)),
             // Trailing fill to extend the SEL_BG band across the row.
             Span::styled(
                 fill(inner.width as usize, &proc_.name),
@@ -162,7 +162,7 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, procs: &[ProcTick]) {
     }
 
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
@@ -195,31 +195,31 @@ fn draw_drill_in(f: &mut Frame, area: Rect, procs: &[ProcTick], sel: usize) {
         .unwrap_or_else(|| "?".into());
 
     let lines = vec![
-        kv("cmd", cmd, p::FG),
-        kv("ppid", p_.ppid.to_string(), p::FG),
-        kv("user", p_.user.clone(), p::FG),
+        kv("cmd", cmd, p::text_primary()),
+        kv("ppid", p_.ppid.to_string(), p::text_primary()),
+        kv("user", p_.user.clone(), p::text_primary()),
         kv(
             "rss / virt",
             format!("{} / {}", human_bytes(p_.mem_rss), human_bytes(p_.mem_virt)),
-            p::FG,
+            p::text_primary(),
         ),
-        kv("cpu", format!("{:.1}%", p_.cpu_pct), p::FG),
+        kv("cpu", format!("{:.1}%", p_.cpu_pct), p::text_primary()),
         kv(
             "io rate",
             human_rate(p_.io_rate),
-            if p_.io_rate > 0.0 { p::CYAN } else { p::DIM },
+            if p_.io_rate > 0.0 { p::brand() } else { p::text_muted() },
         ),
-        kv("started", started, p::DIM),
+        kv("started", started, p::text_muted()),
     ];
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
 
 fn kv(k: &str, v: String, val_color: ratatui::style::Color) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{:<11} ", k), Style::default().fg(p::DIM)),
+        Span::styled(format!("{:<11} ", k), Style::default().fg(p::text_muted())),
         Span::styled(v, Style::default().fg(val_color)),
     ])
 }
@@ -255,7 +255,7 @@ fn fill(width: usize, used: &str) -> String {
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::DIM).add_modifier(Modifier::BOLD)
+    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]

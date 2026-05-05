@@ -9,10 +9,10 @@ use ratatui::{
 use crate::app::{App, Snapshot};
 use crate::ui::{
     palette as p,
-    widgets::{block_bar, human_bytes, panel},
+    widgets::{block_bar_styled, human_bytes, panel},
 };
 
-pub fn draw(f: &mut Frame, area: Rect, _app: &App, snap: &Snapshot) {
+pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     let healthy = snap.disks.iter().filter(|d| d.usage_pct < 70.0).count();
     let warn = snap
         .disks
@@ -42,7 +42,7 @@ pub fn draw(f: &mut Frame, area: Rect, _app: &App, snap: &Snapshot) {
     let bar_w = inner.width.saturating_sub(fixed);
 
     let header = Line::from(vec![
-        Span::styled("   ", Style::default().fg(p::DIM)),
+        Span::styled("   ", Style::default().fg(p::text_muted())),
         Span::styled(
             format!("{:<w$} ", "MOUNT POINT", w = mount_w as usize),
             header_style(),
@@ -74,24 +74,24 @@ pub fn draw(f: &mut Frame, area: Rect, _app: &App, snap: &Snapshot) {
     for d in sorted.iter().take(take) {
         let pct = (d.usage_pct / 100.0).clamp(0.0, 1.0);
         let color = bar_color(d.usage_pct);
-        let bar = block_bar(pct, bar_w, color);
+        let bar = block_bar_styled(pct, bar_w, color, app.graph_style);
         let mut spans = vec![
             Span::styled(" \u{25cf} ", Style::default().fg(color)),
             Span::styled(
                 format!("{:<w$.w$} ", d.mount_point, w = mount_w as usize),
-                Style::default().fg(p::FG),
+                Style::default().fg(p::text_primary()),
             ),
             Span::styled(
                 format!("{:<w$.w$} ", d.device, w = dev_w as usize),
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             ),
             Span::styled(
                 format!("{:<w$.w$} ", d.fs_type, w = fs_w as usize),
-                Style::default().fg(p::CYAN),
+                Style::default().fg(p::brand()),
             ),
             Span::styled(
                 format!("{:>w$} ", human_bytes(d.total_bytes), w = size_w as usize),
-                Style::default().fg(p::DIM),
+                Style::default().fg(p::text_muted()),
             ),
             Span::styled(
                 format!(
@@ -106,21 +106,21 @@ pub fn draw(f: &mut Frame, area: Rect, _app: &App, snap: &Snapshot) {
         lines.push(Line::from(spans));
     }
     f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(p::BG)),
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
 }
 
 fn bar_color(used_pct: f32) -> ratatui::style::Color {
     if used_pct >= 90.0 {
-        p::RED
+        p::status_error()
     } else if used_pct >= 70.0 {
-        p::YELLOW
+        p::status_warn()
     } else {
-        p::GREEN
+        p::status_good()
     }
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::DIM).add_modifier(Modifier::BOLD)
+    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
 }

@@ -1,3 +1,8 @@
+// Models are the wire shape between collectors and the UI. Some fields
+// (cpu_cores, threads) are populated for completeness even when no tab
+// reads them yet — adding a column is a UI change, not a model change.
+#![allow(dead_code)]
+
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Default)]

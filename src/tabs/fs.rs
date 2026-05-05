@@ -122,5 +122,7 @@ fn bar_color(used_pct: f32) -> ratatui::style::Color {
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(p::text_muted())
+        .add_modifier(Modifier::BOLD)
 }

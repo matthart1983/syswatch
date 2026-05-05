@@ -63,7 +63,10 @@ fn draw_battery(f: &mut Frame, area: Rect, pwr: &PowerTick, style: GraphStyle) {
         Line::from(""),
         block_bar_styled(pct, cols[0].width.saturating_sub(2), color, style),
         Line::from(""),
-        Line::from(vec![Span::styled(header_text, Style::default().fg(p::text_muted()))]),
+        Line::from(vec![Span::styled(
+            header_text,
+            Style::default().fg(p::text_muted()),
+        )]),
     ];
     f.render_widget(
         Paragraph::new(bar_lines).style(Style::default().bg(p::bg())),
@@ -138,7 +141,10 @@ fn draw_status(f: &mut Frame, area: Rect, pwr: &PowerTick) {
     };
     f.render_widget(
         Paragraph::new(vec![
-            Line::from(vec![Span::styled("source", Style::default().fg(p::text_muted()))]),
+            Line::from(vec![Span::styled(
+                "source",
+                Style::default().fg(p::text_muted()),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled(format!("{} ", src_glyph), Style::default().fg(src_color)),
@@ -178,7 +184,10 @@ fn draw_status(f: &mut Frame, area: Rect, pwr: &PowerTick) {
         };
     f.render_widget(
         Paragraph::new(vec![
-            Line::from(vec![Span::styled("thermal", Style::default().fg(p::text_muted()))]),
+            Line::from(vec![Span::styled(
+                "thermal",
+                Style::default().fg(p::text_muted()),
+            )]),
             Line::from(""),
             Line::from(vec![Span::styled(
                 throttle_text,
@@ -217,13 +226,19 @@ fn draw_status(f: &mut Frame, area: Rect, pwr: &PowerTick) {
         };
     f.render_widget(
         Paragraph::new(vec![
-            Line::from(vec![Span::styled("draw", Style::default().fg(p::text_muted()))]),
+            Line::from(vec![Span::styled(
+                "draw",
+                Style::default().fg(p::text_muted()),
+            )]),
             Line::from(""),
             Line::from(vec![Span::styled(
                 draw_text,
                 Style::default().fg(draw_color).add_modifier(Modifier::BOLD),
             )]),
-            Line::from(vec![Span::styled(draw_detail, Style::default().fg(p::text_muted()))]),
+            Line::from(vec![Span::styled(
+                draw_detail,
+                Style::default().fg(p::text_muted()),
+            )]),
         ])
         .style(Style::default().bg(p::bg())),
         cols[2],
@@ -275,7 +290,10 @@ fn draw_thermal(f: &mut Frame, area: Rect, pwr: &PowerTick, style: GraphStyle) {
                 style,
             );
             let mut spans = vec![
-                Span::styled(format!("{:<18.18} ", z.name), Style::default().fg(p::text_primary())),
+                Span::styled(
+                    format!("{:<18.18} ", z.name),
+                    Style::default().fg(p::text_primary()),
+                ),
                 Span::styled(format!("{:>5.1}°C ", z.temp_c), Style::default().fg(color)),
             ];
             spans.extend(bar.spans);
@@ -314,8 +332,14 @@ fn draw_thermal(f: &mut Frame, area: Rect, pwr: &PowerTick, style: GraphStyle) {
             .iter()
             .map(|fan| {
                 Line::from(vec![
-                    Span::styled(format!("{:<10.10} ", fan.name), Style::default().fg(p::text_primary())),
-                    Span::styled(format!("{:>5} RPM", fan.rpm), Style::default().fg(p::brand())),
+                    Span::styled(
+                        format!("{:<10.10} ", fan.name),
+                        Style::default().fg(p::text_primary()),
+                    ),
+                    Span::styled(
+                        format!("{:>5} RPM", fan.rpm),
+                        Style::default().fg(p::brand()),
+                    ),
                     Span::styled(
                         match fan.target_rpm {
                             Some(t) => format!("  → {} target", t),

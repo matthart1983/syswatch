@@ -41,8 +41,7 @@ pub fn block_bar_styled(
     // 9-state glyph tables: index 0 = empty (used for padding), 8 = full,
     // 1..=7 = partial fill levels matching `rem`.
     const BARS: [char; 9] = [
-        ' ',
-        '\u{258F}', // ▏ 1/8
+        ' ', '\u{258F}', // ▏ 1/8
         '\u{258E}', // ▎ 2/8
         '\u{258D}', // ▍ 3/8
         '\u{258C}', // ▌ 4/8

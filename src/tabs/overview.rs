@@ -161,7 +161,10 @@ fn kpi_tile(
         accent,
         style,
     );
-    f.render_widget(Paragraph::new(bar).style(Style::default().bg(p::bg())), h[1]);
+    f.render_widget(
+        Paragraph::new(bar).style(Style::default().bg(p::bg())),
+        h[1],
+    );
 
     if !series.is_empty() && series_max > 0.0 {
         let normalized: Vec<f32> = series.iter().map(|v| (v / series_max).min(1.0)).collect();
@@ -217,7 +220,11 @@ fn draw_top_procs(f: &mut Frame, area: Rect, snap: &Snapshot) {
         Cell::from("RSS"),
         Cell::from("COMMAND"),
     ])
-    .style(Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD));
+    .style(
+        Style::default()
+            .fg(p::text_muted())
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows = snap
         .procs

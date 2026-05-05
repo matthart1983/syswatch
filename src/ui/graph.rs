@@ -86,7 +86,10 @@ fn render_bars(f: &mut Frame, area: Rect, samples: &[f32], color: Color) {
     let lines: Vec<Line> = (0..area.height)
         .map(|_| Line::from(Span::styled(s.clone(), Style::default().fg(color))))
         .collect();
-    f.render_widget(Paragraph::new(lines).style(Style::default().bg(p::bg())), area);
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(p::bg())),
+        area,
+    );
 }
 
 fn render_dots(buf: &mut Buffer, area: Rect, samples: &[f32], color: Color) {
@@ -122,8 +125,7 @@ fn render_dots(buf: &mut Buffer, area: Rect, samples: &[f32], color: Color) {
             continue;
         }
         // Highest pixel-row from the bottom that this sample reaches.
-        let top_pixel_from_bottom =
-            ((v * (pix_h as f32 - 1.0)).round() as usize).min(pix_h - 1);
+        let top_pixel_from_bottom = ((v * (pix_h as f32 - 1.0)).round() as usize).min(pix_h - 1);
         for fill in 0..=top_pixel_from_bottom {
             let pix_y_from_top = (pix_h - 1) - fill;
             let cell_y = pix_y_from_top / 4;
@@ -170,14 +172,26 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render_dots(&mut buf, area, &[1.0, 0.5, 0.25, 0.0], Color::White);
         // First column at v=1.0 should fill the top cell with a braille glyph.
-        let top_left = buf.cell((0u16, 0u16)).unwrap().symbol().chars().next().unwrap();
+        let top_left = buf
+            .cell((0u16, 0u16))
+            .unwrap()
+            .symbol()
+            .chars()
+            .next()
+            .unwrap();
         assert!(
             (top_left as u32) >= BRAILLE_BASE && (top_left as u32) < BRAILLE_BASE + 256,
             "expected braille at top-left, got {:?}",
             top_left
         );
         // Last column is zero — no braille mask, just the BG-filled space.
-        let zero_top = buf.cell((3u16, 0u16)).unwrap().symbol().chars().next().unwrap();
+        let zero_top = buf
+            .cell((3u16, 0u16))
+            .unwrap()
+            .symbol()
+            .chars()
+            .next()
+            .unwrap();
         assert_eq!(zero_top, ' ');
     }
 

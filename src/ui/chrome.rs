@@ -12,7 +12,10 @@ use crate::ui::palette as p;
 
 pub fn draw_header(f: &mut Frame, area: Rect, snap: &Snapshot, live: LiveState) {
     let mut spans: Vec<Span> = Vec::new();
-    spans.push(Span::styled(" \u{25cf}", Style::default().fg(p::status_good())));
+    spans.push(Span::styled(
+        " \u{25cf}",
+        Style::default().fg(p::status_good()),
+    ));
     spans.push(Span::styled(
         " SysWatch",
         Style::default().fg(p::brand()).add_modifier(Modifier::BOLD),
@@ -21,7 +24,10 @@ pub fn draw_header(f: &mut Frame, area: Rect, snap: &Snapshot, live: LiveState) 
         format!(" v{}", env!("CARGO_PKG_VERSION")),
         Style::default().fg(p::text_muted()),
     ));
-    spans.push(Span::styled("  \u{2502}  ", Style::default().fg(p::border())));
+    spans.push(Span::styled(
+        "  \u{2502}  ",
+        Style::default().fg(p::border()),
+    ));
     spans.push(Span::styled("host ", Style::default().fg(p::text_muted())));
     spans.push(Span::styled(
         snap.host.hostname.clone(),
@@ -37,7 +43,10 @@ pub fn draw_header(f: &mut Frame, area: Rect, snap: &Snapshot, live: LiveState) 
         format_uptime(snap.host.uptime_secs),
         Style::default().fg(p::text_primary()),
     ));
-    spans.push(Span::styled("  load ", Style::default().fg(p::text_muted())));
+    spans.push(Span::styled(
+        "  load ",
+        Style::default().fg(p::text_muted()),
+    ));
     spans.push(Span::styled(
         format!(
             "{:.2} {:.2} {:.2}",
@@ -126,7 +135,9 @@ pub fn draw_tab_bar(f: &mut Frame, area: Rect, active: TabId, insight_count: usi
             if !badge_suffix.is_empty() {
                 label_spans.push(Span::styled(
                     badge_suffix,
-                    Style::default().fg(p::status_warn()).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(p::status_warn())
+                        .add_modifier(Modifier::BOLD),
                 ));
             }
             label_spans.push(Span::raw(" "));
@@ -196,8 +207,11 @@ pub fn draw_footer(f: &mut Frame, area: Rect, graph_style: GraphStyle) {
         .take(area.width as usize)
         .collect();
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(sep, Style::default().fg(p::border()))))
-            .style(Style::default().bg(p::bg())),
+        Paragraph::new(Line::from(Span::styled(
+            sep,
+            Style::default().fg(p::border()),
+        )))
+        .style(Style::default().bg(p::bg())),
         sep_area,
     );
 
@@ -223,7 +237,9 @@ pub fn draw_footer(f: &mut Frame, area: Rect, graph_style: GraphStyle) {
         for (k, label) in *group {
             spans.push(Span::styled(
                 k.to_string(),
-                Style::default().fg(p::key_hint()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(p::key_hint())
+                    .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(
                 format!(":{} ", label),

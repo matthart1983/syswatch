@@ -73,8 +73,10 @@ fn draw_activity(f: &mut Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line> = Vec::new();
     for (label, series, color) in strips.iter() {
-        let mut spans: Vec<Span> =
-            vec![Span::styled(label.to_string(), Style::default().fg(p::text_muted()))];
+        let mut spans: Vec<Span> = vec![Span::styled(
+            label.to_string(),
+            Style::default().fg(p::text_muted()),
+        )];
         let line = sparkline(series, *color);
         spans.extend(line.spans);
         // Highlight the scrub cursor inside the strip if applicable.
@@ -153,7 +155,10 @@ fn draw_events(f: &mut Frame, area: Rect, app: &App) {
             EventKind::TopProcChange => "PROC",
         };
         lines.push(Line::from(vec![
-            Span::styled(format!("{:>7}s ", ev.age_secs), Style::default().fg(p::text_muted())),
+            Span::styled(
+                format!("{:>7}s ", ev.age_secs),
+                Style::default().fg(p::text_muted()),
+            ),
             Span::styled(
                 format!("{:<5} ", kind_label),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -182,8 +187,9 @@ fn draw_scrubber(f: &mut Frame, area: Rect, app: &App) {
         ((live_x as f32) * frac).round() as usize
     };
 
-    let mut line_chars: Vec<(char, ratatui::style::Color, bool)> =
-        (0..bar_w).map(|_| ('\u{2500}', p::border(), false)).collect();
+    let mut line_chars: Vec<(char, ratatui::style::Color, bool)> = (0..bar_w)
+        .map(|_| ('\u{2500}', p::border(), false))
+        .collect();
     if pos < line_chars.len() {
         line_chars[pos] = ('\u{25CF}', p::brand(), true);
     }
@@ -332,5 +338,7 @@ fn window_normalized(raw: &[f32], take: usize, max: f32) -> Vec<f32> {
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(p::text_muted())
+        .add_modifier(Modifier::BOLD)
 }

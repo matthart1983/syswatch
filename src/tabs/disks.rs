@@ -77,12 +77,18 @@ fn draw_devices(f: &mut Frame, area: Rect, snap: &Snapshot, style: GraphStyle) {
         let bar = block_bar_styled(pct, bar_w, dot_color, style);
         let mut spans = vec![
             Span::styled(" \u{25cf} ", Style::default().fg(dot_color)),
-            Span::styled(format!("{:<28.28} ", d.device), Style::default().fg(p::text_primary())),
+            Span::styled(
+                format!("{:<28.28} ", d.device),
+                Style::default().fg(p::text_primary()),
+            ),
             Span::styled(
                 format!("{:<32.32} ", d.mount_point),
                 Style::default().fg(p::text_muted()),
             ),
-            Span::styled(format!("{:<8.8} ", d.fs_type), Style::default().fg(p::brand())),
+            Span::styled(
+                format!("{:<8.8} ", d.fs_type),
+                Style::default().fg(p::brand()),
+            ),
             Span::styled(
                 format!("{:>9} ", human_bytes(d.total_bytes)),
                 Style::default().fg(p::text_muted()),
@@ -137,7 +143,9 @@ fn draw_throughput(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
             Span::styled("read   ", Style::default().fg(p::text_muted())),
             Span::styled(
                 human_rate(snap.disk_io.read_rate),
-                Style::default().fg(p::status_good()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(p::status_good())
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
@@ -149,7 +157,10 @@ fn draw_throughput(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         ]),
         Line::from(vec![
             Span::styled("peak   ", Style::default().fg(p::text_muted())),
-            Span::styled(human_rate(peak as f64), Style::default().fg(p::text_primary())),
+            Span::styled(
+                human_rate(peak as f64),
+                Style::default().fg(p::text_primary()),
+            ),
         ]),
         Line::from(vec![
             Span::styled("session", Style::default().fg(p::text_muted())),
@@ -180,5 +191,7 @@ fn bar_color(used_pct: f32) -> ratatui::style::Color {
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(p::text_muted())
+        .add_modifier(Modifier::BOLD)
 }

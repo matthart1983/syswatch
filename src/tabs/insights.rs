@@ -74,7 +74,9 @@ fn draw_strip(f: &mut Frame, area: Rect, insights: &[Insight]) {
     let summary = if active == 0 {
         Span::styled(
             "0 active  — system nominal",
-            Style::default().fg(p::status_good()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::status_good())
+                .add_modifier(Modifier::BOLD),
         )
     } else {
         Span::styled(
@@ -88,7 +90,10 @@ fn draw_strip(f: &mut Frame, area: Rect, insights: &[Insight]) {
         summary,
         Span::styled(breakdown, Style::default().fg(p::text_muted())),
     ]);
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(p::bg())), area);
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(p::bg())),
+        area,
+    );
 }
 
 fn draw_cards(f: &mut Frame, area: Rect, insights: &[Insight]) {
@@ -159,7 +164,9 @@ fn draw_card(f: &mut Frame, area: Rect, ins: &Insight) {
         Span::raw(" "),
         Span::styled(
             title_truncated,
-            Style::default().fg(p::text_primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::text_primary())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             pad_right(
@@ -181,7 +188,11 @@ fn draw_card(f: &mut Frame, area: Rect, ins: &Insight) {
             break;
         }
         let text = ins.body.get(i).cloned().unwrap_or_default();
-        let body_color = if i == 0 { p::text_primary() } else { p::text_muted() };
+        let body_color = if i == 0 {
+            p::text_primary()
+        } else {
+            p::text_muted()
+        };
         let truncated = truncate(&text, w.saturating_sub(4));
         lines.push(Line::from(vec![
             Span::styled("\u{2503}", Style::default().fg(sev_fg)),

@@ -8,8 +8,7 @@ use ratatui::{
 
 use crate::app::{App, Snapshot};
 use crate::ui::{
-    graph,
-    palette as p,
+    graph, palette as p,
     widgets::{human_bytes, human_rate, panel},
 };
 
@@ -66,11 +65,17 @@ fn draw_aggregate(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         ]),
         Line::from(vec![
             Span::styled("peak  ", Style::default().fg(p::text_muted())),
-            Span::styled(human_rate(peak as f64), Style::default().fg(p::text_primary())),
+            Span::styled(
+                human_rate(peak as f64),
+                Style::default().fg(p::text_primary()),
+            ),
         ]),
         Line::from(vec![
             Span::styled("ifaces ", Style::default().fg(p::text_muted())),
-            Span::styled(snap.net.len().to_string(), Style::default().fg(p::text_primary())),
+            Span::styled(
+                snap.net.len().to_string(),
+                Style::default().fg(p::text_primary()),
+            ),
         ]),
     ];
     f.render_widget(
@@ -94,7 +99,11 @@ fn draw_iface_table(f: &mut Frame, area: Rect, snap: &Snapshot) {
     ])];
     let take = inner.height.saturating_sub(1) as usize;
     for iface in snap.net.iter().take(take) {
-        let state_color = if iface.is_up { p::status_good() } else { p::border() };
+        let state_color = if iface.is_up {
+            p::status_good()
+        } else {
+            p::border()
+        };
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{:<14.14} ", iface.name),
@@ -129,5 +138,7 @@ fn draw_iface_table(f: &mut Frame, area: Rect, snap: &Snapshot) {
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(p::text_muted())
+        .add_modifier(Modifier::BOLD)
 }

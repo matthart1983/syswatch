@@ -54,7 +54,9 @@ fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     ));
     spans.push(Span::styled(
         format!("{} running  ", running),
-        Style::default().fg(p::status_good()).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(p::status_good())
+            .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(
         format!("{} idle  ", idle),
@@ -63,7 +65,11 @@ fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     spans.push(Span::styled(
         format!("{} failed  ", failed),
         Style::default()
-            .fg(if failed > 0 { p::status_error() } else { p::text_muted() })
+            .fg(if failed > 0 {
+                p::status_error()
+            } else {
+                p::text_muted()
+            })
             .add_modifier(Modifier::BOLD),
     ));
     if unknown > 0 {
@@ -139,7 +145,10 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, services: &[ServiceTick]) {
                 format!("{:>5} ", exit_text),
                 Style::default().fg(exit_color).bg(row_bg),
             ),
-            Span::styled(svc.name.clone(), Style::default().fg(p::text_primary()).bg(row_bg)),
+            Span::styled(
+                svc.name.clone(),
+                Style::default().fg(p::text_primary()).bg(row_bg),
+            ),
             Span::styled(
                 fill_remainder(inner.width as usize, &svc.name),
                 Style::default().bg(row_bg),
@@ -165,7 +174,10 @@ fn draw_detail(f: &mut Frame, area: Rect, services: &[ServiceTick], sel: usize) 
     let (status_color, status_label) = status_style(svc.status);
     let lines = vec![
         Line::from(vec![
-            Span::styled(format!("{:<10} ", "status"), Style::default().fg(p::text_muted())),
+            Span::styled(
+                format!("{:<10} ", "status"),
+                Style::default().fg(p::text_muted()),
+            ),
             Span::styled(
                 status_label,
                 Style::default()
@@ -260,7 +272,9 @@ fn fill_remainder(width: usize, used: &str) -> String {
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(p::text_muted())
+        .add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]

@@ -56,7 +56,11 @@ fn draw_aggregate(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
             ),
             p::text_primary(),
         ),
-        kv("cores", format!("{}", snap.cpu.per_core.len()), p::text_primary()),
+        kv(
+            "cores",
+            format!("{}", snap.cpu.per_core.len()),
+            p::text_primary(),
+        ),
         kv("model", snap.host.cpu_model.clone(), p::text_muted()),
     ];
     f.render_widget(
@@ -87,7 +91,9 @@ fn draw_per_core(f: &mut Frame, area: Rect, snap: &Snapshot, style: GraphStyle) 
         spans.extend(bar.spans);
         spans.push(Span::styled(
             format!(" {:>5.1}%", pct),
-            Style::default().fg(p::text_primary()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::text_primary())
+                .add_modifier(Modifier::BOLD),
         ));
         lines.push(Line::from(spans));
     }

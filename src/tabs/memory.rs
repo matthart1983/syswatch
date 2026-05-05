@@ -126,28 +126,41 @@ fn draw_top_rss(f: &mut Frame, area: Rect, snap: &Snapshot) {
     let mut lines: Vec<Line> = vec![Line::from(vec![
         Span::styled(
             format!("{:>7} ", "PID"),
-            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::text_muted())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{:<10} ", "USER"),
-            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::text_muted())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{:>10} ", "RSS"),
-            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::text_muted())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{:>10} ", "VIRT"),
-            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::text_muted())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "COMMAND",
-            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::text_muted())
+                .add_modifier(Modifier::BOLD),
         ),
     ])];
     for proc_ in sorted.iter().take(take) {
         lines.push(Line::from(vec![
-            Span::styled(format!("{:>7} ", proc_.pid), Style::default().fg(p::text_primary())),
+            Span::styled(
+                format!("{:>7} ", proc_.pid),
+                Style::default().fg(p::text_primary()),
+            ),
             Span::styled(
                 format!("{:<10.10} ", proc_.user),
                 Style::default().fg(p::text_muted()),

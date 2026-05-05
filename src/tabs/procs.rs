@@ -145,10 +145,17 @@ fn draw_table(f: &mut Frame, area: Rect, app: &App, procs: &[ProcTick]) {
             Span::styled(
                 format!("{:>11} ", human_rate(proc_.io_rate)),
                 Style::default()
-                    .fg(if proc_.io_rate > 0.0 { p::brand() } else { p::text_muted() })
+                    .fg(if proc_.io_rate > 0.0 {
+                        p::brand()
+                    } else {
+                        p::text_muted()
+                    })
                     .bg(row_bg),
             ),
-            Span::styled(proc_.name.clone(), Style::default().fg(p::text_primary()).bg(row_bg)),
+            Span::styled(
+                proc_.name.clone(),
+                Style::default().fg(p::text_primary()).bg(row_bg),
+            ),
             // Trailing fill to extend the SEL_BG band across the row.
             Span::styled(
                 fill(inner.width as usize, &proc_.name),
@@ -207,7 +214,11 @@ fn draw_drill_in(f: &mut Frame, area: Rect, procs: &[ProcTick], sel: usize) {
         kv(
             "io rate",
             human_rate(p_.io_rate),
-            if p_.io_rate > 0.0 { p::brand() } else { p::text_muted() },
+            if p_.io_rate > 0.0 {
+                p::brand()
+            } else {
+                p::text_muted()
+            },
         ),
         kv("started", started, p::text_muted()),
     ];
@@ -255,7 +266,9 @@ fn fill(width: usize, used: &str) -> String {
 }
 
 fn header_style() -> Style {
-    Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(p::text_muted())
+        .add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]

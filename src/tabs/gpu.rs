@@ -146,14 +146,20 @@ fn draw_status(f: &mut Frame, area: Rect, gpu: &GpuTick) {
         gpu.power_w
             .map(|w| format!("{:.1} W", w))
             .unwrap_or_else(|| "—".into()),
-        if gpu.power_w.is_some() { p::text_primary() } else { p::text_muted() },
+        if gpu.power_w.is_some() {
+            p::text_primary()
+        } else {
+            p::text_muted()
+        },
     ));
 
     if let Some(hint) = &gpu.live_data_hint {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             "live data",
-            Style::default().fg(p::status_warn()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::status_warn())
+                .add_modifier(Modifier::BOLD),
         )]));
         // Wrap the hint over multiple lines if needed.
         let mut s = hint.as_str();
@@ -189,7 +195,9 @@ fn draw_empty(f: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(vec![Span::styled(
             "No GPUs detected",
-            Style::default().fg(p::text_muted()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(p::text_muted())
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(

@@ -1,6 +1,6 @@
 [package]
 name = "syswatch"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Single-host, read-only system diagnostics TUI. Twelve tabs covering CPU, memory, disks, processes, GPU, power, services, network, plus a Timeline scrubber and an Insights anomaly engine. Sibling to netwatch."
 license = "MIT"
@@ -43,6 +43,12 @@ netwatch-sdk = "0.1"
 # Linux NVIDIA support is opt-in: enabling `gpu-nvidia` links libnvidia-ml,
 # which only ships on hosts with the proprietary driver installed.
 nvml-wrapper = { version = "0.12", optional = true }
+
+# macOS-only IOReport + SMC bindings (Apple Silicon GPU temp + per-rail
+# power, no sudo). macpow's library has a compile_error gate for non-macOS,
+# so target-gating means it's silently absent everywhere else.
+[target.'cfg(target_os = "macos")'.dependencies]
+macpow = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 # tempfile lets the Linux power/gpu parsers be exercised on any host by

@@ -13,8 +13,12 @@ use std::time::{Duration, Instant};
 
 use crate::collect::model::*;
 
-const HINT_MACOS_FANS_POWER: &str =
-    "fans + per-component power need `sudo powermetrics --samplers thermal,smc` (deferred)";
+/// Set when our shared macOS sampler couldn't initialize at startup
+/// (IOReport unavailable, SMC denied). Gives the user a hint instead of
+/// silently empty fans + power readings.
+#[cfg(target_os = "macos")]
+const HINT_MACOS_NO_SAMPLER: &str =
+    "macOS sampler unavailable — IOReport / SMC didn't initialize this run";
 
 /// Battery / thermal data changes slowly — refreshing on every 1Hz tick would
 /// spawn 3 subprocesses per second on macOS. We cache the last result and
@@ -35,7 +39,10 @@ impl PowerCollector {
         }
     }
 
-    pub fn sample(&mut self) -> PowerTick {
+    pub fn sample(
+        &mut self,
+        #[cfg(target_os = "macos")] macos_tick: Option<&crate::collect::macos_sampler::MacosTick>,
+    ) -> PowerTick {
         let stale = self
             .last_sample_at
             .map(|t| t.elapsed() >= REFRESH)
@@ -44,7 +51,29 @@ impl PowerCollector {
             self.cached = sample_inner();
             self.last_sample_at = Some(Instant::now());
         }
-        self.cached.clone()
+        let mut tick = self.cached.clone();
+
+        // Overlay per-tick IOReport + SMC data on macOS. system_power_w
+        // and fans were previously the missing pieces of the Power tab;
+        // the shared sampler in Collector now feeds them every cycle.
+        #[cfg(target_os = "macos")]
+        {
+            match macos_tick {
+                Some(m) => {
+                    if let Some(w) = m.system_power_w {
+                        tick.system_power_w = Some(w);
+                    }
+                    if !m.fans.is_empty() {
+                        tick.fans = m.fans.clone();
+                    }
+                    tick.live_data_hint = None;
+                }
+                None => {
+                    tick.live_data_hint = Some(HINT_MACOS_NO_SAMPLER.into());
+                }
+            }
+        }
+        tick
     }
 }
 
@@ -54,20 +83,15 @@ fn sample_inner() -> PowerTick {
 
     let mut tick = PowerTick::default();
 
-    // Battery + power-draw from ioreg AppleSmartBattery.
+    // Battery from ioreg AppleSmartBattery. We no longer derive
+    // system_power_w from V·A here — the shared macOS sampler returns
+    // the real per-rail total via IOReport in `PowerCollector::sample`.
     if let Ok(out) = Command::new("ioreg")
         .args(["-rn", "AppleSmartBattery"])
         .output()
     {
         let text = String::from_utf8_lossy(&out.stdout);
-        let battery = parse_macos_ioreg_battery(&text);
-        tick.system_power_w = battery
-            .as_ref()
-            .and_then(|b| match (b.voltage_v, b.amperage_ma) {
-                (Some(v), Some(a)) => Some(v * (a.unsigned_abs() as f32) / 1000.0),
-                _ => None,
-            });
-        tick.battery = battery;
+        tick.battery = parse_macos_ioreg_battery(&text);
     }
 
     // Power source from pmset -g batt's first line: "Now drawing from 'X Power'".
@@ -84,7 +108,8 @@ fn sample_inner() -> PowerTick {
         tick.thermal_throttle_pct = Some(parse_macos_pmset_throttle(&text));
     }
 
-    tick.live_data_hint = Some(HINT_MACOS_FANS_POWER.into());
+    // Hint is set by the per-tick overlay in `sample()` based on
+    // whether the shared sampler initialized; leave empty here.
     tick
 }
 

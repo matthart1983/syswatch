@@ -4,6 +4,8 @@ use std::time::{Instant, SystemTime};
 use sysinfo::{Disks, Networks, Pid, ProcessRefreshKind, RefreshKind, System, Users};
 
 use super::gpu::GpuDiscovery;
+#[cfg(target_os = "macos")]
+use super::macos_sampler::MacosSampler;
 use super::model::*;
 use super::power::PowerCollector;
 use super::services::ServicesCollector;
@@ -25,6 +27,11 @@ pub struct Collector {
     power: PowerCollector,
     services: ServicesCollector,
     host: HostInfo,
+    /// Shared IOReport + SMC sampler. Both `gpu` and `power` consume
+    /// the per-tick output (`MacosTick`) so we only do one IOReport
+    /// subscription + one SMC connection across the process.
+    #[cfg(target_os = "macos")]
+    macos: Option<MacosSampler>,
 }
 
 impl Collector {
@@ -68,6 +75,8 @@ impl Collector {
             power: PowerCollector::new(),
             services: ServicesCollector::new(),
             host,
+            #[cfg(target_os = "macos")]
+            macos: MacosSampler::try_init(),
         }
     }
 
@@ -100,8 +109,24 @@ impl Collector {
         let (disks, disk_io) = self.collect_disks(dt_secs);
         let net = self.collect_net(dt_secs);
         let procs = self.collect_procs(dt_secs);
+        // Sample IOReport + SMC once per cycle on macOS; both `gpu` and
+        // `power` read from the cached MacosTick so we don't duplicate
+        // subscriptions or controller queries.
+        #[cfg(target_os = "macos")]
+        let macos_tick = self.macos.as_mut().map(|s| s.tick());
+        #[cfg(target_os = "macos")]
+        let macos_tick_ref = macos_tick.as_ref();
+
+        #[cfg(target_os = "macos")]
+        let gpus = self.gpu.refresh(macos_tick_ref);
+        #[cfg(not(target_os = "macos"))]
         let gpus = self.gpu.refresh();
+
+        #[cfg(target_os = "macos")]
+        let power = self.power.sample(macos_tick_ref);
+        #[cfg(not(target_os = "macos"))]
         let power = self.power.sample();
+
         let services = self.services.sample();
 
         let mut host = self.host.clone();

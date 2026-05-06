@@ -1,5 +1,7 @@
 pub mod collector;
 pub mod gpu;
+#[cfg(target_os = "macos")]
+pub mod macos_sampler;
 pub mod model;
 pub mod power;
 pub mod ring;

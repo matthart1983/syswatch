@@ -111,63 +111,24 @@ const HINT_LINUX_INTEL: &str =
 pub struct GpuDiscovery {
     /// Cached at startup (subprocess on macOS is too slow to poll).
     pub devices: Vec<GpuTick>,
-
-    // ── macOS IOReport + SMC long-lived state ──────────────────────────
-    //
-    // IOReport requires two consecutive samples to compute energy/dt
-    // (i.e. power). We cache the previous one and the live subscription
-    // here so each `refresh()` call only does a single `sample()` plus
-    // the delta math. SMC is similarly stateful — the connection caches
-    // key info to avoid re-querying the controller every tick.
-    #[cfg(target_os = "macos")]
-    macos_state: Option<MacosPowerState>,
-}
-
-/// Encapsulates the IOReport + SMC handles plus the previous sample
-/// needed for delta-derived power. All construction is fallible — if any
-/// piece fails to initialize we discard the whole struct and the GPU tab
-/// shows the "IOReport unavailable" hint instead of half-readings.
-#[cfg(target_os = "macos")]
-struct MacosPowerState {
-    sampler: macpow::ioreport::IOReportSampler,
-    smc: macpow::smc::SmcConnection,
-    prev_sample: Option<macpow::ioreport::Sample>,
-}
-
-#[cfg(target_os = "macos")]
-impl MacosPowerState {
-    fn try_init() -> Option<Self> {
-        // Each step is independently fallible; if any of them errors we
-        // bail and let the caller fall back to the hint string.
-        let sampler = macpow::ioreport::IOReportSampler::new().ok()?;
-        let mut smc = macpow::smc::SmcConnection::open().ok()?;
-        // Discover temp keys synchronously here. macpow exposes an async
-        // pattern but the cost is small (~ms) and synchronous keeps
-        // GpuDiscovery::new() simple.
-        let handle = smc.start_temp_discovery();
-        smc.finish_temp_discovery(handle);
-        Some(Self {
-            sampler,
-            smc,
-            prev_sample: None,
-        })
-    }
 }
 
 impl GpuDiscovery {
     pub fn new() -> Self {
         Self {
             devices: discover(),
-            #[cfg(target_os = "macos")]
-            macos_state: MacosPowerState::try_init(),
         }
     }
 
-    /// Refresh per-tick mutable fields. On macOS we shell out to `ioreg` and
-    /// pull live `PerformanceStatistics` from each IOAccelerator. On Linux we
-    /// re-read `gpu_busy_percent` from sysfs.
+    /// Refresh per-tick mutable fields. On macOS the caller passes a
+    /// pre-sampled `MacosTick` (constructed by the shared sampler in the
+    /// Collector); on Linux we re-read sysfs directly. The macOS arg is
+    /// ignored on other platforms.
     #[allow(unused_mut, unused_variables)]
-    pub fn refresh(&mut self) -> Vec<GpuTick> {
+    pub fn refresh(
+        &mut self,
+        #[cfg(target_os = "macos")] macos_tick: Option<&crate::collect::macos_sampler::MacosTick>,
+    ) -> Vec<GpuTick> {
         let mut out = self.devices.clone();
 
         #[cfg(target_os = "macos")]
@@ -185,37 +146,17 @@ impl GpuDiscovery {
                 }
             }
 
-            // IOReport: GPU per-rail power (delta of two samples → W).
-            // SMC: GPU thermistor (Tg* keys, °C). On the very first tick
-            // there's no previous sample, so power is None until tick 2.
-            let mut gpu_power_w: Option<f32> = None;
-            let mut gpu_temp_c: Option<f32> = None;
-            if let Some(state) = self.macos_state.as_mut() {
-                if let Ok(cur) = state.sampler.sample() {
-                    if let Some(prev) = state.prev_sample.as_ref() {
-                        if let Ok(power) = state.sampler.parse_power(prev, &cur) {
-                            gpu_power_w = Some(power.gpu_w);
-                        }
-                    }
-                    state.prev_sample = Some(cur);
-                }
-                let temps = state.smc.read_temperatures();
-                // Macs report several Tg* sensors (die, package, GPU
-                // proximity); take the max as the headline. Filter to
-                // only-fresh readings — `stale` means the SMC read failed
-                // this cycle and we'd be showing yesterday's temp.
-                gpu_temp_c = temps
-                    .iter()
-                    .filter(|t| t.category == "GPU" && !t.stale)
-                    .map(|t| t.value_celsius)
-                    .fold(None, |acc, v| Some(acc.map_or(v, |a: f32| a.max(v))));
-            }
+            // IOReport+SMC values from the shared sampler. None until the
+            // sampler initializes successfully (or, for power, until the
+            // second tick when a delta becomes available).
+            let gpu_power_w = macos_tick.and_then(|t| t.gpu_power_w);
+            let gpu_temp_c = macos_tick.and_then(|t| t.gpu_temp_c);
             for dev in out.iter_mut() {
                 dev.power_w = gpu_power_w;
                 dev.temp_c = gpu_temp_c;
                 dev.live_data_hint = match (gpu_power_w, gpu_temp_c) {
                     (Some(_), Some(_)) => None,
-                    _ if self.macos_state.is_some() => None, // sampling, just no data yet
+                    _ if macos_tick.is_some() => None, // sampler ran, data primes next tick
                     _ => Some(HINT_MACOS_NO_IOREPORT.into()),
                 };
             }

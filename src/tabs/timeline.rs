@@ -512,20 +512,14 @@ mod tests {
 
     #[test]
     fn derive_events_filters_info_severity_insights() {
-        let session = vec![
-            snap_with_top(ts(100), "foo"),
-            snap_with_top(ts(101), "foo"),
-        ];
+        let session = vec![snap_with_top(ts(100), "foo"), snap_with_top(ts(101), "foo")];
         let insights = vec![insight(Severity::Info, "no anomalies")];
         assert!(derive_events(&session, &insights).is_empty());
     }
 
     #[test]
     fn derive_events_emits_warn_and_crit_insights() {
-        let session = vec![
-            snap_with_top(ts(100), "foo"),
-            snap_with_top(ts(101), "foo"),
-        ];
+        let session = vec![snap_with_top(ts(100), "foo"), snap_with_top(ts(101), "foo")];
         let insights = vec![
             insight(Severity::Warn, "swap thrash"),
             insight(Severity::Crit, "vram pinned"),
@@ -533,8 +527,12 @@ mod tests {
         let events = derive_events(&session, &insights);
         assert_eq!(events.len(), 2);
         let details: Vec<&str> = events.iter().map(|e| e.detail.as_str()).collect();
-        assert!(details.iter().any(|d| d.contains("[WARN]") && d.contains("swap thrash")));
-        assert!(details.iter().any(|d| d.contains("[CRIT]") && d.contains("vram pinned")));
+        assert!(details
+            .iter()
+            .any(|d| d.contains("[WARN]") && d.contains("swap thrash")));
+        assert!(details
+            .iter()
+            .any(|d| d.contains("[CRIT]") && d.contains("vram pinned")));
     }
 
     #[test]
@@ -564,10 +562,7 @@ mod tests {
         // Real clocks can jump backwards (NTP corrections, manual resets).
         // duration_since returns Err in that case; the function's `.unwrap_or(0)`
         // must keep it from panicking.
-        let session = vec![
-            snap_with_top(ts(200), "foo"),
-            snap_with_top(ts(100), "bar"),
-        ];
+        let session = vec![snap_with_top(ts(200), "foo"), snap_with_top(ts(100), "bar")];
         let events = derive_events(&session, &[]);
         // Just confirm we got back a valid Vec; specific values aren't
         // load-bearing once duration_since errored.

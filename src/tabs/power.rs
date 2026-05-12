@@ -552,8 +552,14 @@ mod tests {
             .unwrap();
 
         let text = buffer_to_string(terminal.backend().buffer());
-        assert!(text.contains("POWER STATUS"), "missing panel title:\n{text}");
+        assert!(
+            text.contains("POWER STATUS"),
+            "missing panel title:\n{text}"
+        );
         assert!(text.contains("Battery"), "missing source label:\n{text}");
-        assert!(text.contains("no throttle"), "missing throttle label:\n{text}");
+        assert!(
+            text.contains("no throttle"),
+            "missing throttle label:\n{text}"
+        );
     }
 }

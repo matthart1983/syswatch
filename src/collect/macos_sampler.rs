@@ -3,9 +3,8 @@
 //! macpow's `IOReportSampler` and `SmcConnection` are stateful: IOReport
 //! needs two consecutive samples to derive power (energy/dt), and SMC
 //! caches per-key info to avoid re-querying the controller. Both pieces
-//! are expensive to spin up and modest-but-not-free to call per tick, so
-//! this module owns one of each and exposes a single `tick()` method
-//! that the rest of the crate consumes.
+//! are expensive to spin up and can occasionally stall, so they live on a
+//! worker thread. The UI thread only polls the latest completed tick.
 //!
 //! macpow types are deliberately not re-exported. Each tick returns a
 //! [`MacosTick`] typed in syswatch's own data shapes — that way swapping
@@ -15,6 +14,8 @@
 #![cfg(target_os = "macos")]
 
 use crate::collect::model::FanTick;
+use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
 
 /// One tick of macOS-only platform data, post-translated to syswatch
 /// types so callers don't see macpow.
@@ -37,21 +38,57 @@ pub struct MacosTick {
 }
 
 pub struct MacosSampler {
+    rx: Receiver<MacosTick>,
+    latest: Option<MacosTick>,
+}
+
+struct MacosSamplerWorker {
     sampler: macpow::ioreport::IOReportSampler,
     smc: macpow::smc::SmcConnection,
     prev_sample: Option<macpow::ioreport::Sample>,
 }
 
 impl MacosSampler {
-    /// Initialize both subsystems. Any failure during construction
-    /// returns None — callers fall back to whatever the platform
-    /// gave them previously.
+    /// Start the macOS sampler worker. Any failure to spawn the worker
+    /// returns None; initialization failures inside the worker simply leave
+    /// callers without a completed tick, which preserves UI responsiveness.
     pub fn try_init() -> Option<Self> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("syswatch-macos-sampler".into())
+            .spawn(move || {
+                let Some(mut worker) = MacosSamplerWorker::try_init() else {
+                    return;
+                };
+                loop {
+                    if tx.send(worker.sample_tick()).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            })
+            .ok()?;
+        Some(Self { rx, latest: None })
+    }
+
+    /// Return the most recent completed IOReport + SMC sample without
+    /// blocking the UI thread. None means the worker has not produced a
+    /// tick yet, or initialization failed inside the worker.
+    pub fn tick(&mut self) -> Option<MacosTick> {
+        while let Ok(tick) = self.rx.try_recv() {
+            self.latest = Some(tick);
+        }
+        self.latest.clone()
+    }
+}
+
+impl MacosSamplerWorker {
+    fn try_init() -> Option<Self> {
         let sampler = macpow::ioreport::IOReportSampler::new().ok()?;
         let mut smc = macpow::smc::SmcConnection::open().ok()?;
         // SMC needs a one-time async key-discovery phase. Drive it
-        // synchronously here — the cost is small (~ms) and synchronous
-        // keeps initialization contained inside this constructor.
+        // inside the worker so any slow controller query cannot blank
+        // or freeze the terminal UI.
         let handle = smc.start_temp_discovery();
         smc.finish_temp_discovery(handle);
         Some(Self {
@@ -62,9 +99,9 @@ impl MacosSampler {
     }
 
     /// Take one IOReport + SMC sample and project it into a `MacosTick`.
-    /// Each sub-step is independently fallible; any single failure
-    /// leaves that field as None and the others still populate.
-    pub fn tick(&mut self) -> MacosTick {
+    /// Each sub-step is independently fallible; any single failure leaves
+    /// that field as None and the others still populate.
+    fn sample_tick(&mut self) -> MacosTick {
         let mut out = MacosTick::default();
 
         if let Ok(cur) = self.sampler.sample() {

@@ -162,7 +162,7 @@ impl Collector {
         // `power` read from the cached MacosTick so we don't duplicate
         // subscriptions or controller queries.
         #[cfg(target_os = "macos")]
-        let macos_tick = self.macos.as_mut().map(|s| s.tick());
+        let macos_tick = self.macos.as_mut().and_then(|s| s.tick());
         #[cfg(target_os = "macos")]
         let macos_tick_ref = macos_tick.as_ref();
 

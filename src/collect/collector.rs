@@ -291,14 +291,22 @@ impl Collector {
         )
     }
 
-    /// Net interfaces. Where the platform SDK supports it, defer to
-    /// netwatch-sdk so syswatch and netwatch-agent see byte counters through
-    /// the same parsers (sysfs on Linux, getifaddrs on macOS). On Linux/macOS
-    /// we use the SDK; everywhere else fall back to sysinfo.
+    /// Net interfaces. On Linux we defer to netwatch-sdk so syswatch and
+    /// netwatch-agent read byte counters through the same sysfs parser —
+    /// there it's a cheap in-process read of `/proc/net/dev`.
+    ///
+    /// macOS deliberately does NOT use the SDK here: its
+    /// `collect_interface_stats()` shells out to `netstat -ibn` plus an
+    /// `ifconfig <iface>` per interface on every call — a dozen-plus
+    /// `posix_spawn`s per tick, which was the single largest contributor to
+    /// syswatch's CPU usage (issue #4). sysinfo already refreshes the same
+    /// kernel counters in-process via `getifaddrs` (`self.nets.refresh()`
+    /// runs every tick), so on macOS we read those instead and pay nothing
+    /// extra. Everywhere else also falls through to the sysinfo path.
     fn collect_net(&mut self, dt: f64) -> Vec<InterfaceTick> {
         let mut out = Vec::new();
 
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         if let Ok(stats) = netwatch_sdk::platform::collect_interface_stats() {
             for (name, s) in stats {
                 let prev = self.last_iface.get(&name).copied().unwrap_or((0, 0));
@@ -327,7 +335,12 @@ impl Collector {
             return out;
         }
 
-        // Cross-platform fallback via sysinfo.
+        // Cross-platform fallback via sysinfo (also the macOS path now).
+        // sysinfo exposes byte counters but not interface up/down state, so
+        // on macOS we layer in a single in-process `getifaddrs` flag read —
+        // no `ifconfig` fork. Other platforms can't tell and report `true`.
+        #[cfg(target_os = "macos")]
+        let up_flags = interface_up_flags();
         for (name, data) in self.nets.iter() {
             let rx = data.total_received();
             let tx = data.total_transmitted();
@@ -343,9 +356,13 @@ impl Collector {
                 tx.saturating_sub(prev.1) as f64 / dt
             };
             self.last_iface.insert(name.clone(), (rx, tx));
+            #[cfg(target_os = "macos")]
+            let is_up = up_flags.get(name).copied().unwrap_or(true);
+            #[cfg(not(target_os = "macos"))]
+            let is_up = true;
             out.push(InterfaceTick {
                 name: name.clone(),
-                is_up: true,
+                is_up,
                 rx_bytes: rx,
                 tx_bytes: tx,
                 rx_rate,
@@ -424,4 +441,43 @@ fn status_to_char(s: sysinfo::ProcessStatus) -> char {
         .next()
         .unwrap_or('?')
         .to_ascii_uppercase()
+}
+
+/// macOS interface up/down map via a single in-process `getifaddrs` call.
+///
+/// sysinfo gives byte counters but not link state, and the old SDK path
+/// recovered state by forking `ifconfig <iface>` once per interface every
+/// tick (issue #4). `getifaddrs` returns the `IFF_UP | IFF_RUNNING` flags
+/// for every interface in one syscall instead. An interface appears once
+/// per address family, all sharing the same flags, so we OR the result and
+/// last-write is harmless. On failure the map is empty and callers default
+/// to `true`.
+#[cfg(target_os = "macos")]
+fn interface_up_flags() -> HashMap<String, bool> {
+    use std::ffi::CStr;
+
+    let mut map = HashMap::new();
+    // SAFETY: standard getifaddrs/freeifaddrs ownership dance. We only read
+    // fields while the list is alive and free it before returning.
+    unsafe {
+        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifap) != 0 {
+            return map;
+        }
+        let mut cur = ifap;
+        while !cur.is_null() {
+            let ifa = &*cur;
+            if !ifa.ifa_name.is_null() {
+                let name = CStr::from_ptr(ifa.ifa_name).to_string_lossy().into_owned();
+                let flags = ifa.ifa_flags;
+                let up =
+                    (flags & libc::IFF_UP as u32) != 0 && (flags & libc::IFF_RUNNING as u32) != 0;
+                let entry = map.entry(name).or_insert(false);
+                *entry |= up;
+            }
+            cur = ifa.ifa_next;
+        }
+        libc::freeifaddrs(ifap);
+    }
+    map
 }

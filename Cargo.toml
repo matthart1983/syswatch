@@ -56,6 +56,10 @@ nvml-wrapper = { version = "0.12", optional = true }
 # so target-gating means it's silently absent everywhere else.
 [target.'cfg(target_os = "macos")'.dependencies]
 macpow = { version = "0.1", default-features = false }
+# Used only for an in-process `getifaddrs` interface up/down flag read in the
+# net collector — cheaper than shelling out to `ifconfig` per interface (see
+# issue #4). Already in the build graph transitively via sysinfo/macpow.
+libc = "0.2"
 
 [dev-dependencies]
 # tempfile lets the Linux power/gpu parsers be exercised on any host by

@@ -1194,6 +1194,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "libc",
  "macpow",
  "netwatch-sdk",
  "nvml-wrapper",

@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{App, Snapshot};
 use crate::collect::GpuTick;
 use crate::ui::{
-    graph::GraphStyle,
+    graph::{self, GraphStyle},
     palette as p,
     widgets::{block_bar_styled, human_bytes, panel},
 };
@@ -30,24 +30,85 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
 
     for (i, gpu) in snap.gpus.iter().enumerate() {
         if let Some(rect) = chunks.get(i) {
-            draw_card(f, *rect, gpu, app.graph_style, snap);
+            draw_card(f, *rect, gpu, app, snap);
         }
     }
 }
 
-fn draw_card(f: &mut Frame, area: Rect, gpu: &GpuTick, style: GraphStyle, snap: &Snapshot) {
+/// Rows reserved at the bottom of a card for the util-history strip (one
+/// label row + the chart). Only carved out when the card is tall enough that
+/// the metrics/status block above it still gets its minimum height.
+const CHART_H: u16 = 4;
+
+fn draw_card(f: &mut Frame, area: Rect, gpu: &GpuTick, app: &App, snap: &Snapshot) {
+    let style = app.graph_style;
     let title = format!("[{}] {}", gpu.vendor, gpu.name);
     let block = panel(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Reserve a util-history strip at the bottom when this device reports
+    // live util, has at least two samples to draw a line from, and the card
+    // is tall enough that the metrics/status split keeps its minimum height.
+    // Otherwise the card keeps its original full-height two-column layout.
+    let history = app.history.gpu_util_by_name.get(&gpu.name);
+    let want_chart = gpu.util_pct.is_some()
+        && history.map(|r| r.len() >= 2).unwrap_or(false)
+        && inner.height >= CHART_H + 5;
+
+    let (top, chart) = if want_chart {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(5), Constraint::Length(CHART_H)])
+            .split(inner);
+        (rows[0], Some(rows[1]))
+    } else {
+        (inner, None)
+    };
+
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(inner);
+        .split(top);
 
     draw_metrics(f, cols[0], gpu, style);
     draw_status(f, cols[1], gpu, snap);
+
+    if let (Some(chart_area), Some(series)) = (chart, history) {
+        draw_util_history(f, chart_area, &series.to_vec(), style, app.graph_opts());
+    }
+}
+
+/// Time-series of this device's util %, mirroring the CPU tab's aggregate
+/// strip: a muted label row over a single chart fed through the shared graph
+/// renderer (so the `g` bars/dots toggle and btop fade apply here too).
+fn draw_util_history(
+    f: &mut Frame,
+    area: Rect,
+    series: &[f32],
+    style: GraphStyle,
+    opts: crate::ui::graph::GraphOpts,
+) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
+    let cur = series.last().copied().unwrap_or(0.0);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("util ", Style::default().fg(p::text_muted())),
+            Span::styled(
+                format!("now {:.0}% · {} samples", cur, series.len()),
+                Style::default().fg(p::text_muted()),
+            ),
+        ]))
+        .style(Style::default().bg(p::bg())),
+        rows[0],
+    );
+
+    let normalized: Vec<f32> = series.iter().map(|v| (v / 100.0).clamp(0.0, 1.0)).collect();
+    graph::render(f, rows[1], &normalized, style, p::brand(), opts);
 }
 
 fn draw_metrics(f: &mut Frame, area: Rect, gpu: &GpuTick, style: GraphStyle) {
@@ -290,5 +351,43 @@ mod tests {
         assert_eq!(util_color(84.9), p::status_warn());
         assert_eq!(util_color(85.0), p::status_error());
         assert_eq!(util_color(100.0), p::status_error());
+    }
+
+    use crate::ui::graph::GraphOpts;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn util_history_renders_current_value_and_chart_glyphs() {
+        // Five samples ending at 30% — the label row must surface the latest
+        // value and the sample count, and the chart row must draw block-bar
+        // glyphs from the shared renderer (proves the series reached it).
+        let series = vec![10.0_f32, 50.0, 90.0, 70.0, 30.0];
+        let backend = TestBackend::new(40, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw_util_history(f, f.area(), &series, GraphStyle::Bars, GraphOpts::default());
+            })
+            .unwrap();
+
+        let text = buffer_to_string(terminal.backend().buffer());
+        assert!(text.contains("now 30%"), "missing current util:\n{text}");
+        assert!(text.contains("5 samples"), "missing sample count:\n{text}");
+        assert!(
+            text.chars().any(|c| ('\u{2581}'..='\u{2588}').contains(&c)),
+            "expected block-bar glyphs in the chart row:\n{text}"
+        );
     }
 }

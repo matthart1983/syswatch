@@ -33,11 +33,12 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Ratio(1, 5),
-            Constraint::Ratio(1, 5),
-            Constraint::Ratio(1, 5),
-            Constraint::Ratio(1, 5),
-            Constraint::Ratio(1, 5),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
         ])
         .split(area);
 
@@ -121,6 +122,34 @@ fn draw_kpi_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
             .map(|v| *v as f32)
             .collect::<Vec<f32>>(),
         max_or(&app.history.net_rate.to_vec(), 1.0) as f32,
+        style,
+        app.graph_opts(),
+    );
+    // Current GPU util = cross-device max, matching history.gpu_util. None
+    // when no device exposes live util (so we show "—" + an empty chart
+    // rather than a misleading flat-zero line).
+    let gpu_cur: Option<f32> = snap
+        .gpus
+        .iter()
+        .filter_map(|g| g.util_pct)
+        .fold(None, |acc, u| Some(acc.map_or(u, |m: f32| m.max(u))));
+    let gpu_series = if gpu_cur.is_some() {
+        app.history.gpu_util.to_vec()
+    } else {
+        Vec::new()
+    };
+    kpi_tile(
+        f,
+        cols[5],
+        "GPU",
+        gpu_cur
+            .map(|u| format!("{:.0}%", u))
+            .unwrap_or_else(|| "—".into()),
+        gpu_cur
+            .map(|u| kpi_color(u, 60.0, 85.0))
+            .unwrap_or(p::text_muted()),
+        &gpu_series,
+        100.0,
         style,
         app.graph_opts(),
     );

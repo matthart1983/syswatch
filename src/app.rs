@@ -55,6 +55,11 @@ pub struct History {
     /// util keeps no series, so the tab shows its honest "no live util" state
     /// instead of a fake flat-zero graph.
     pub gpu_util_by_name: HashMap<String, Ring<f32>>,
+    /// Per-device VRAM used fraction (0..1) keyed by device name. Same lazy,
+    /// only-when-reported discipline as `gpu_util_by_name`: a sample lands
+    /// only on ticks where the device reports both a total and a used figure,
+    /// so devices that don't expose VRAM usage keep no series.
+    pub gpu_vram_by_name: HashMap<String, Ring<f32>>,
     /// Per-pid CPU EWMA, decayed each tick. Pids absent in the latest tick
     /// are pruned. Values are 0..100. The runaway-proc heuristic reads this
     /// to find processes whose load is sustained, not transient.
@@ -78,6 +83,7 @@ impl History {
             io_rate: Ring::new(cap),
             gpu_util: Ring::new(cap),
             gpu_util_by_name: HashMap::new(),
+            gpu_vram_by_name: HashMap::new(),
             proc_cpu_ewma: HashMap::new(),
             session: Ring::new(cap),
             cap,
@@ -120,6 +126,15 @@ impl History {
                     .entry(g.name.clone())
                     .or_insert_with(|| Ring::new(cap))
                     .push(u);
+            }
+            // VRAM used fraction, same only-when-reported rule as util.
+            if let (Some(total), Some(used)) = (g.vram_total_bytes, g.vram_used_bytes) {
+                if total > 0 {
+                    self.gpu_vram_by_name
+                        .entry(g.name.clone())
+                        .or_insert_with(|| Ring::new(cap))
+                        .push((used as f32 / total as f32).clamp(0.0, 1.0));
+                }
             }
         }
 
@@ -1020,6 +1035,36 @@ mod tests {
         assert_eq!(
             h.gpu_util_by_name.get("gpu0").map(|r| r.to_vec()),
             Some(vec![10.0, 30.0, 55.0])
+        );
+    }
+
+    #[test]
+    fn gpu_vram_by_name_records_used_fraction_only_when_reported() {
+        use crate::collect::GpuTick;
+        let mut h = History::new(10);
+        // Tick 1: full VRAM figures → fraction recorded.
+        h.push(&Snapshot {
+            gpus: vec![GpuTick {
+                name: "gpu0".into(),
+                vram_total_bytes: Some(1000),
+                vram_used_bytes: Some(250),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        // Tick 2: total but no used → skipped (no fake sample).
+        h.push(&Snapshot {
+            gpus: vec![GpuTick {
+                name: "gpu0".into(),
+                vram_total_bytes: Some(1000),
+                vram_used_bytes: None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        assert_eq!(
+            h.gpu_vram_by_name.get("gpu0").map(|r| r.to_vec()),
+            Some(vec![0.25])
         );
     }
 

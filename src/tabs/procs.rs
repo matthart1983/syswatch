@@ -148,14 +148,14 @@ fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     let count_text = if let Some(f) = app.proc_filter_active.as_deref() {
         let visible = filtered_sorted(&snap.procs, app.proc_sort, Some(f)).len();
         format!(
-            "    {}/{} procs  filter: \"{}\"   /:edit  s:sort  d:detail  ↑↓:select",
+            "    {}/{} procs  filter: \"{}\"   / f:edit  s:sort  d:detail  ↑↓:select",
             visible,
             snap.procs.len(),
             f
         )
     } else {
         format!(
-            "    {} procs   /:filter  s:sort  d:detail  ↑↓:select",
+            "    {} procs   / f:filter  s:sort  d:detail  ↑↓:select",
             snap.procs.len()
         )
     };

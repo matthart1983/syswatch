@@ -270,7 +270,7 @@ pub fn draw_footer(f: &mut Frame, area: Rect, graph_style: GraphStyle, flash: Op
         &[("p", "Pause"), (",", "Settings")],
         &[("S", "Snapshot"), ("R", "Record")],
         &[("g", graph_label.as_str()), ("t", theme_label.as_str())],
-        &[("/", "Filter"), ("q", "Quit"), ("1-9", "Tab")],
+        &[("/f", "Filter"), ("q", "Quit"), ("1-9", "Tab")],
         &[("?", "Help")],
     ];
     // Transient flash takes the whole footer when active — used by the

@@ -685,9 +685,15 @@ impl App {
                 self.proc_sort = self.proc_sort.next();
                 self.proc_sel = 0;
             }
-            (KeyCode::Char('/'), _) if self.active == TabId::Procs => {
+            (KeyCode::Char('/') | KeyCode::Char('f'), _) if self.active == TabId::Procs => {
                 // Enter filter input mode. Pre-fill with the current
                 // applied filter (if any) so the user can refine it.
+                //
+                // `f` is an alternate trigger for `/`: on some keyboard
+                // layouts (e.g. ergol, issue #18) `/` lives on the AltGr
+                // layer and doesn't reliably reach us as a plain Char('/'),
+                // leaving search unreachable. `f` is a base-layer letter on
+                // every layout and matches btop/glances' filter key.
                 self.proc_filter_input = true;
                 self.proc_filter_buf = self.proc_filter_active.clone().unwrap_or_default();
             }
@@ -1336,5 +1342,45 @@ mod tests {
         assert_eq!(session.len(), 3);
         assert_eq!(session[0].procs[0].cpu_pct, 20.0);
         assert_eq!(session[2].procs[0].cpu_pct, 40.0);
+    }
+
+    // ── proc filter keybinding (issue #18) ──────────────────────────────
+
+    fn press(app: &mut App, c: char) {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn slash_and_f_both_open_the_procs_filter() {
+        // On layouts like ergol, `/` sits on the AltGr layer and can be
+        // unreachable, so `f` is an equivalent trigger. Both must open the
+        // filter, and only on the Procs tab.
+        for key in ['/', 'f'] {
+            let mut app = App::new(TabId::Procs, SyswatchConfig::default());
+            press(&mut app, key);
+            assert!(
+                app.proc_filter_input,
+                "'{key}' should open the procs filter"
+            );
+        }
+    }
+
+    #[test]
+    fn filter_trigger_is_inert_off_the_procs_tab() {
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        press(&mut app, '/');
+        press(&mut app, 'f');
+        assert!(!app.proc_filter_input);
+    }
+
+    #[test]
+    fn f_types_into_the_filter_buffer_once_editing() {
+        // The `f` alias must not swallow a literal 'f' the user types as
+        // part of a filter term — input mode routes chars to the buffer.
+        let mut app = App::new(TabId::Procs, SyswatchConfig::default());
+        press(&mut app, '/');
+        assert!(app.proc_filter_input);
+        press(&mut app, 'f');
+        assert_eq!(app.proc_filter_buf, "f");
     }
 }

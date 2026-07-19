@@ -101,7 +101,7 @@ const GROUPS: &[Group] = &[
                 label: "Cycle sort (cpu / mem / io / start / name / gpu / net)",
             },
             Row {
-                keys: "/",
+                keys: "/ or f",
                 label: "Filter procs (Esc cancel, Enter apply)",
             },
             Row {

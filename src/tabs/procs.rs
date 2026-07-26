@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style, Stylize},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -29,11 +29,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         .split(area);
 
     draw_sort_strip(f, v[0], app, snap);
-    let view = filtered_sorted(
-        &snap.procs,
-        app.proc_sort,
-        app.proc_filter_active.as_deref(),
-    );
+    let view = filtered_sorted(&snap.procs, app.proc_sort, app.filter_active.as_deref());
     let total_mem = snap.mem.total_bytes.max(1);
     draw_table(f, v[1], app, &view, total_mem, snap.net_rates_estimated);
     if app.proc_show_detail {
@@ -54,16 +50,21 @@ pub(crate) fn filtered_sorted(
         .iter()
         .filter(|p| match needle.as_deref() {
             None => true,
-            Some(n) => {
-                p.name.to_lowercase().contains(n)
-                    || p.cmd.to_lowercase().contains(n)
-                    || p.user.to_lowercase().contains(n)
-            }
+            Some(n) => proc_matches(p, n),
         })
         .cloned()
         .collect();
     sort_in_place(&mut out, key);
     out
+}
+
+/// The filter predicate itself, split out so the Memory tab can narrow
+/// its own process table by the same rule without inheriting the Procs
+/// tab's sort order (issue #20). `needle` must already be lowercased.
+pub(crate) fn proc_matches(p: &ProcTick, needle: &str) -> bool {
+    p.name.to_lowercase().contains(needle)
+        || p.cmd.to_lowercase().contains(needle)
+        || p.user.to_lowercase().contains(needle)
 }
 
 fn sort_in_place(out: &mut [ProcTick], key: ProcSort) {
@@ -101,24 +102,10 @@ fn sort_in_place(out: &mut [ProcTick], key: ProcSort) {
 fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     // While typing into the filter, the strip becomes a single-line
     // input box — no sort chips, just the prompt and a cursor.
-    if app.proc_filter_input {
-        let line = Line::from(vec![
-            Span::styled(" / ", Style::default().fg(p::brand()).bold()),
-            Span::styled(
-                app.proc_filter_buf.clone(),
-                Style::default().fg(p::text_primary()),
-            ),
-            Span::styled(
-                "▏",
-                Style::default().fg(p::brand()).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "    Enter:apply  Esc:cancel",
-                Style::default().fg(p::text_muted()),
-            ),
-        ]);
+    if app.filter_input {
         f.render_widget(
-            Paragraph::new(line).style(Style::default().bg(p::bg())),
+            Paragraph::new(crate::ui::widgets::filter_input_line(&app.filter_buf))
+                .style(Style::default().bg(p::bg())),
             area,
         );
         return;
@@ -145,7 +132,7 @@ fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     }
     // Show match count when a filter is applied so the user can see
     // how aggressive the narrowing is at a glance.
-    let count_text = if let Some(f) = app.proc_filter_active.as_deref() {
+    let count_text = if let Some(f) = app.filter_active.as_deref() {
         let visible = filtered_sorted(&snap.procs, app.proc_sort, Some(f)).len();
         format!(
             "    {}/{} procs  filter: \"{}\"   / f:edit  s:sort  d:detail  ↑↓:select",

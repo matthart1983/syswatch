@@ -21,12 +21,28 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         .split(area);
 
     draw_sort_strip(f, v[0], app, snap);
-    let sorted = sort_services(&snap.services, app.service_sort);
+    let sorted = filtered_sorted(
+        &snap.services,
+        app.service_sort,
+        app.filter_active.as_deref(),
+    );
     draw_table(f, v[1], app, &sorted);
     draw_detail(f, v[2], &sorted, app.service_sel);
 }
 
 fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
+    // While typing, the strip becomes the filter input box — same
+    // treatment as the Procs tab so the interaction reads identically
+    // wherever the user triggers it.
+    if app.filter_input {
+        f.render_widget(
+            Paragraph::new(crate::ui::widgets::filter_input_line(&app.filter_buf))
+                .style(Style::default().bg(p::bg())),
+            area,
+        );
+        return;
+    }
+
     let (running, idle, failed, unknown) = counts(&snap.services);
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::styled(" sort ", Style::default().fg(p::text_muted())));
@@ -48,10 +64,25 @@ fn draw_sort_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         }
     }
     spans.push(Span::raw("    "));
-    spans.push(Span::styled(
-        format!("{} total  ", snap.services.len()),
-        Style::default().fg(p::text_muted()),
-    ));
+    // With a filter applied, lead with the match count so the narrowing
+    // is visible — the status tallies below still describe the whole set.
+    if let Some(needle) = app.filter_active.as_deref() {
+        let visible = filtered_sorted(&snap.services, app.service_sort, Some(needle)).len();
+        spans.push(Span::styled(
+            format!(
+                "{}/{} services  filter: \"{}\"   / f:edit  ",
+                visible,
+                snap.services.len(),
+                needle
+            ),
+            Style::default().fg(p::brand()),
+        ));
+    } else {
+        spans.push(Span::styled(
+            format!("{} total  ", snap.services.len()),
+            Style::default().fg(p::text_muted()),
+        ));
+    }
     spans.push(Span::styled(
         format!("{} running  ", running),
         Style::default()
@@ -242,6 +273,28 @@ fn counts(services: &[ServiceTick]) -> (usize, usize, usize, usize) {
     (r, i, f, u)
 }
 
+/// Filter then sort the service list. `filter` is a case-insensitive
+/// substring match against name / detail — detail carries systemd's
+/// DESCRIPTION, which is often what a user remembers a unit by. Public
+/// so the App key handler can clamp `service_sel` to the same view
+/// (issue #20).
+pub(crate) fn filtered_sorted(
+    services: &[ServiceTick],
+    key: ServiceSort,
+    filter: Option<&str>,
+) -> Vec<ServiceTick> {
+    let needle = filter.map(|s| s.to_lowercase());
+    let matched: Vec<ServiceTick> = services
+        .iter()
+        .filter(|s| match needle.as_deref() {
+            None => true,
+            Some(n) => s.name.to_lowercase().contains(n) || s.detail.to_lowercase().contains(n),
+        })
+        .cloned()
+        .collect();
+    sort_services(&matched, key)
+}
+
 fn sort_services(services: &[ServiceTick], key: ServiceSort) -> Vec<ServiceTick> {
     let mut out = services.to_vec();
     match key {
@@ -377,5 +430,52 @@ mod tests {
         assert_eq!(i, 1);
         assert_eq!(f, 1);
         assert_eq!(u, 1);
+    }
+
+    // ── filter (issue #20) ──────────────────────────────────────────────
+
+    #[test]
+    fn filter_none_returns_the_full_sorted_list() {
+        let out = filtered_sorted(&fixture(), ServiceSort::Name, None);
+        assert_eq!(out.len(), 5);
+        assert_eq!(names(&out)[0], "alpha.service");
+    }
+
+    #[test]
+    fn filter_matches_name_case_insensitively() {
+        let out = filtered_sorted(&fixture(), ServiceSort::Name, Some("ETA"));
+        assert_eq!(names(&out), vec!["beta.service", "zeta.service"]);
+    }
+
+    #[test]
+    fn filter_matches_detail_text() {
+        // systemd's DESCRIPTION lands in `detail`, and it's often what a
+        // user remembers a unit by rather than its unit name.
+        let mut fx = fixture();
+        fx[0].detail = "OpenSSH server daemon".into();
+        let out = filtered_sorted(&fx, ServiceSort::Name, Some("openssh"));
+        assert_eq!(names(&out), vec!["zeta.service"]);
+    }
+
+    #[test]
+    fn filter_applies_before_sorting() {
+        // Sort must order the matches, not the whole list — otherwise the
+        // selection index and the visible rows disagree.
+        let out = filtered_sorted(&fixture(), ServiceSort::Status, Some("a."));
+        assert_eq!(
+            names(&out),
+            vec![
+                "alpha.service", // Failed
+                "beta.service",  // Running
+                "gamma.service", // Running
+                "zeta.service",  // Idle
+                "delta.service", // Unknown
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_with_no_matches_is_empty() {
+        assert!(filtered_sorted(&fixture(), ServiceSort::Name, Some("nope")).is_empty());
     }
 }

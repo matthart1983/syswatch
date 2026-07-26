@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Snapshot};
+use crate::collect::ProcTick;
 use crate::ui::{
     graph::GraphStyle,
     palette as p,
@@ -17,26 +18,74 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
     // Drop the SWAP panel entirely when no swap is configured — those 7 rows
     // go to the process list instead (issue #12).
     let has_swap = snap.mem.swap_total_bytes > 0;
+    // The filter strip costs a process row, so it only appears once there
+    // is a filter to show or edit — same reasoning as issue #12. The key
+    // itself is advertised in the footer and help popup (issue #20).
+    let show_filter = app.filter_input || app.filter_active.is_some();
+
+    let mut constraints = vec![Constraint::Length(7)];
     if has_swap {
-        let v = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(7),
-                Constraint::Length(7),
-                Constraint::Min(0),
-            ])
-            .split(area);
-        draw_ram_bar(f, v[0], snap, app.graph_style);
-        draw_swap(f, v[1], snap, app.graph_style);
-        draw_proc_breakdown(f, v[2], app, snap);
-    } else {
-        let v = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(7), Constraint::Min(0)])
-            .split(area);
-        draw_ram_bar(f, v[0], snap, app.graph_style);
-        draw_proc_breakdown(f, v[1], app, snap);
+        constraints.push(Constraint::Length(7));
     }
+    if show_filter {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Min(0));
+
+    let v = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+
+    let mut row = 0;
+    draw_ram_bar(f, v[row], snap, app.graph_style);
+    row += 1;
+    if has_swap {
+        draw_swap(f, v[row], snap, app.graph_style);
+        row += 1;
+    }
+    if show_filter {
+        draw_filter_strip(f, v[row], app, snap);
+        row += 1;
+    }
+    draw_proc_breakdown(f, v[row], app, snap);
+}
+
+/// Filter prompt while typing; match count once applied.
+fn draw_filter_strip(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
+    let line = if app.filter_input {
+        crate::ui::widgets::filter_input_line(&app.filter_buf)
+    } else {
+        let needle = app.filter_active.as_deref().unwrap_or_default();
+        Line::from(Span::styled(
+            format!(
+                " {}/{} procs  filter: \"{}\"   / f:edit",
+                filtered_procs(&snap.procs, Some(needle)).len(),
+                snap.procs.len(),
+                needle
+            ),
+            Style::default().fg(p::brand()),
+        ))
+    };
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(p::bg())),
+        area,
+    );
+}
+
+/// Narrow the process list by the shared filter, preserving input order —
+/// the breakdown does its own memory-weighted sort afterwards, so unlike
+/// the Procs tab this must not impose one.
+fn filtered_procs(procs: &[ProcTick], filter: Option<&str>) -> Vec<ProcTick> {
+    let needle = filter.map(|s| s.to_lowercase());
+    procs
+        .iter()
+        .filter(|p| match needle.as_deref() {
+            None => true,
+            Some(n) => crate::tabs::procs::proc_matches(p, n),
+        })
+        .cloned()
+        .collect()
 }
 
 fn draw_ram_bar(f: &mut Frame, area: Rect, snap: &Snapshot, style: GraphStyle) {
@@ -172,7 +221,7 @@ fn draw_proc_breakdown(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
 
     // Order by the most honest metric available per row, falling back
     // to RSS so undetailed rows still rank sensibly.
-    let mut sorted = snap.procs.clone();
+    let mut sorted = filtered_procs(&snap.procs, app.filter_active.as_deref());
     sorted.sort_by_key(|p| std::cmp::Reverse(p.mem_footprint.or(p.mem_pss).unwrap_or(p.mem_rss)));
     let take = inner.height.saturating_sub(1) as usize;
 
@@ -294,4 +343,75 @@ fn draw_proc_breakdown(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {
         Paragraph::new(lines).style(Style::default().bg(p::bg())),
         inner,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proc(pid: u32, name: &str, cmd: &str, user: &str, rss: u64) -> ProcTick {
+        ProcTick {
+            pid,
+            name: name.into(),
+            cmd: cmd.into(),
+            user: user.into(),
+            mem_rss: rss,
+            ..Default::default()
+        }
+    }
+
+    fn fixture() -> Vec<ProcTick> {
+        vec![
+            proc(1, "kernel_task", "", "root", 900),
+            proc(
+                2,
+                "Chrome Helper",
+                "/Applications/Chrome --renderer",
+                "matt",
+                500,
+            ),
+            proc(3, "postgres", "postgres: writer", "postgres", 300),
+        ]
+    }
+
+    fn names(v: &[ProcTick]) -> Vec<&str> {
+        v.iter().map(|p| p.name.as_str()).collect()
+    }
+
+    // ── filter (issue #20) ──────────────────────────────────────────────
+
+    #[test]
+    fn no_filter_keeps_every_proc() {
+        assert_eq!(filtered_procs(&fixture(), None).len(), 3);
+    }
+
+    #[test]
+    fn filter_matches_name_cmd_or_user_case_insensitively() {
+        assert_eq!(
+            names(&filtered_procs(&fixture(), Some("CHROME"))),
+            ["Chrome Helper"]
+        );
+        assert_eq!(
+            names(&filtered_procs(&fixture(), Some("renderer"))),
+            ["Chrome Helper"]
+        );
+        assert_eq!(
+            names(&filtered_procs(&fixture(), Some("root"))),
+            ["kernel_task"]
+        );
+    }
+
+    /// The breakdown re-sorts by footprint/PSS/RSS afterwards, so the
+    /// filter must leave input order alone — imposing the Procs tab's
+    /// sort here would silently reorder the memory ranking.
+    #[test]
+    fn filter_preserves_input_order() {
+        let out = filtered_procs(&fixture(), Some("e"));
+        assert_eq!(names(&out), ["kernel_task", "Chrome Helper", "postgres"]);
+    }
+
+    #[test]
+    fn filter_with_no_matches_is_empty() {
+        assert!(filtered_procs(&fixture(), Some("zzz")).is_empty());
+    }
 }

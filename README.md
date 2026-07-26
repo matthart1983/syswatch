@@ -76,7 +76,7 @@ syswatch --replay session.swr  # scrub a recorded session
 Tab / Shift-Tab     →  Cycle tabs
 ↑ / ↓               →  Select row (Procs, Services)
 s                   →  Cycle sort (Procs, Services)
-/                   →  Filter processes
+/ or f              →  Filter the table (Procs, Memory, Services)
 ← / →               →  Scrub session backward / forward
 Home / End          →  Oldest sample / live
 p                   →  Pause
@@ -106,7 +106,7 @@ q / Ctrl-C          →  Quit
 
 ## Scope
 
-All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), Settings (`,`), Help (`?`), process filter (`/`), themes (`t`), and the btop-style fade rendering are all live.
+All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), and the btop-style fade rendering are all live.
 
 **No sudo, ever.** GPU utilization, VRAM, and the renderer/tiler split on Apple Silicon come from `ioreg` (`AGXAccelerator PerformanceStatistics`); GPU temperature, per-rail power, and fans come from IOReport + SMC. Linux reads sysfs (`/sys/class/drm`, thermal zones, hwmon). Where a figure genuinely needs elevated access, the tab says so rather than prompting.
 

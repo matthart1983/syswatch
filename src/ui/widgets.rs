@@ -7,6 +7,32 @@ use ratatui::{
 use crate::ui::graph::GraphStyle;
 use crate::ui::palette as p;
 
+/// The one-line filter prompt, shared by every tab that supports `/`
+/// (Procs, Memory, Services). Keeping it in one place is what makes the
+/// interaction feel identical wherever it's triggered — issue #20 started
+/// as "search doesn't work outside Procs".
+pub fn filter_input_line(buf: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            " / ",
+            Style::default()
+                .fg(p::brand())
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+        Span::styled(buf.to_string(), Style::default().fg(p::text_primary())),
+        Span::styled(
+            "▏",
+            Style::default()
+                .fg(p::brand())
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+        Span::styled(
+            "    Enter:apply  Esc:cancel",
+            Style::default().fg(p::text_muted()),
+        ),
+    ])
+}
+
 /// Standard panel block: faint borders, dim title, BG fill.
 ///
 /// Title is consumed (owned String) so callers can pass `format!(...)` directly

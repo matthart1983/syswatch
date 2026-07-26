@@ -235,7 +235,13 @@ pub fn draw_tab_bar(f: &mut Frame, area: Rect, active: TabId, insight_count: usi
     );
 }
 
-pub fn draw_footer(f: &mut Frame, area: Rect, graph_style: GraphStyle, flash: Option<&str>) {
+pub fn draw_footer(
+    f: &mut Frame,
+    area: Rect,
+    graph_style: GraphStyle,
+    flash: Option<&str>,
+    show_filter: bool,
+) {
     // Row 0: thin separator. Row 1: hotkey strip.
     let sep_area = Rect {
         x: area.x,
@@ -266,11 +272,20 @@ pub fn draw_footer(f: &mut Frame, area: Rect, graph_style: GraphStyle, flash: Op
     // Footer advertises only the keys that actually do something today.
     // Diff (D) is Phase 2 work; Profile (P) was an early aspiration
     // that's now an explicit non-goal — see plan.md.
+    //
+    // Filter is tab-scoped, so the hint is too: advertising it on the
+    // nine tabs with nothing to search is what made issue #20 read as a
+    // broken keybinding rather than a missing feature.
+    let nav: &[(&str, &str)] = if show_filter {
+        &[("/f", "Filter"), ("q", "Quit"), ("1-9", "Tab")]
+    } else {
+        &[("q", "Quit"), ("1-9", "Tab")]
+    };
     let groups: &[&[(&str, &str)]] = &[
         &[("p", "Pause"), (",", "Settings")],
         &[("S", "Snapshot"), ("R", "Record")],
         &[("g", graph_label.as_str()), ("t", theme_label.as_str())],
-        &[("/f", "Filter"), ("q", "Quit"), ("1-9", "Tab")],
+        nav,
         &[("?", "Help")],
     ];
     // Transient flash takes the whole footer when active — used by the

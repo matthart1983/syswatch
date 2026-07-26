@@ -271,6 +271,13 @@ impl TabId {
             TabId::Insights => "+",
         }
     }
+    /// Tabs whose main table can be narrowed with the `/` (or `f`) filter.
+    /// Everything else is a fixed-shape dashboard with nothing to search.
+    /// The footer and help popup key off this, so a tab that gains a
+    /// filterable list only has to be added here (issue #20).
+    pub fn supports_filter(&self) -> bool {
+        matches!(self, TabId::Procs | TabId::Memory | TabId::Services)
+    }
     pub fn title(&self) -> &'static str {
         match self {
             TabId::Overview => "Overview",
@@ -434,17 +441,22 @@ pub struct App {
     /// (Esc / `?` to close).
     pub help_active: bool,
 
-    // ── Procs filter (`/` key) ──────────────────────────────────────────
+    // ── Table filter (`/` or `f` key) ───────────────────────────────────
     /// True while the user is typing into the filter input box. Esc
     /// cancels (drops both the buffer and any active filter); Enter
-    /// commits the buffer to `proc_filter_active`.
-    pub proc_filter_input: bool,
-    /// In-progress filter text. Applied live to the procs list while
+    /// commits the buffer to `filter_active`.
+    pub filter_input: bool,
+    /// In-progress filter text. Applied live to the visible table while
     /// typing so the user sees match results immediately.
-    pub proc_filter_buf: String,
-    /// Currently-applied filter (case-insensitive substring match
-    /// against name/cmd/user). None means no filter.
-    pub proc_filter_active: Option<String>,
+    pub filter_buf: String,
+    /// Currently-applied filter (case-insensitive substring match).
+    /// None means no filter.
+    ///
+    /// One filter shared by every `TabId::supports_filter` tab rather
+    /// than one per tab: the question a user is asking ("where is
+    /// chrome?") doesn't change when they move from Procs to Memory,
+    /// so carrying it across is the useful behaviour (issue #20).
+    pub filter_active: Option<String>,
 
     /// Active session recorder, when the user has pressed `R`. None
     /// means not recording. Drop on quit flushes the buffered tail.
@@ -515,54 +527,62 @@ impl App {
             settings_status: None,
             footer_flash: None,
             help_active: false,
-            proc_filter_input: false,
-            proc_filter_buf: String::new(),
-            proc_filter_active: None,
+            filter_input: false,
+            filter_buf: String::new(),
+            filter_active: None,
             recorder: None,
             replay_mode: false,
         }
+    }
+
+    /// Send every filterable tab's cursor back to the top. The filter is
+    /// shared across tabs, so changing it invalidates each of their
+    /// selections — not just the one currently on screen.
+    fn reset_filtered_selection(&mut self) {
+        self.proc_sel = 0;
+        self.service_sel = 0;
     }
 
     fn handle_key(&mut self, k: KeyEvent) -> bool {
         if k.kind != KeyEventKind::Press {
             return false;
         }
-        // Procs filter input mode — narrow keyboard scope so chars
-        // typed into the search box don't also fire dashboard hotkeys.
-        if self.proc_filter_input {
+        // Filter input mode — narrow keyboard scope so chars typed into
+        // the search box don't also fire dashboard hotkeys.
+        if self.filter_input {
             match (k.code, k.modifiers) {
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
                 (KeyCode::Esc, _) => {
                     // Cancel: drop both the in-progress text and any
                     // currently-applied filter.
-                    self.proc_filter_input = false;
-                    self.proc_filter_buf.clear();
-                    self.proc_filter_active = None;
-                    self.proc_sel = 0;
+                    self.filter_input = false;
+                    self.filter_buf.clear();
+                    self.filter_active = None;
+                    self.reset_filtered_selection();
                 }
                 (KeyCode::Enter, _) => {
-                    self.proc_filter_input = false;
-                    self.proc_filter_active = if self.proc_filter_buf.is_empty() {
+                    self.filter_input = false;
+                    self.filter_active = if self.filter_buf.is_empty() {
                         None
                     } else {
-                        Some(self.proc_filter_buf.clone())
+                        Some(self.filter_buf.clone())
                     };
-                    self.proc_sel = 0;
+                    self.reset_filtered_selection();
                 }
                 (KeyCode::Backspace, _) => {
-                    self.proc_filter_buf.pop();
+                    self.filter_buf.pop();
                     // Live-apply so the table updates as the user types.
-                    self.proc_filter_active = if self.proc_filter_buf.is_empty() {
+                    self.filter_active = if self.filter_buf.is_empty() {
                         None
                     } else {
-                        Some(self.proc_filter_buf.clone())
+                        Some(self.filter_buf.clone())
                     };
-                    self.proc_sel = 0;
+                    self.reset_filtered_selection();
                 }
                 (KeyCode::Char(c), _) => {
-                    self.proc_filter_buf.push(c);
-                    self.proc_filter_active = Some(self.proc_filter_buf.clone());
-                    self.proc_sel = 0;
+                    self.filter_buf.push(c);
+                    self.filter_active = Some(self.filter_buf.clone());
+                    self.reset_filtered_selection();
                 }
                 _ => {}
             }
@@ -673,7 +693,7 @@ impl App {
                         crate::tabs::procs::filtered_sorted(
                             &s.procs,
                             self.proc_sort,
-                            self.proc_filter_active.as_deref(),
+                            self.filter_active.as_deref(),
                         )
                         .len()
                         .saturating_sub(1)
@@ -685,7 +705,7 @@ impl App {
                 self.proc_sort = self.proc_sort.next();
                 self.proc_sel = 0;
             }
-            (KeyCode::Char('/') | KeyCode::Char('f'), _) if self.active == TabId::Procs => {
+            (KeyCode::Char('/') | KeyCode::Char('f'), _) if self.active.supports_filter() => {
                 // Enter filter input mode. Pre-fill with the current
                 // applied filter (if any) so the user can refine it.
                 //
@@ -694,8 +714,8 @@ impl App {
                 // layer and doesn't reliably reach us as a plain Char('/'),
                 // leaving search unreachable. `f` is a base-layer letter on
                 // every layout and matches btop/glances' filter key.
-                self.proc_filter_input = true;
-                self.proc_filter_buf = self.proc_filter_active.clone().unwrap_or_default();
+                self.filter_input = true;
+                self.filter_buf = self.filter_active.clone().unwrap_or_default();
             }
             (KeyCode::Char('d'), _) if self.active == TabId::Procs => {
                 // Collapse/expand the drill-in detail pane to trade detail
@@ -706,10 +726,21 @@ impl App {
                 self.service_sel = self.service_sel.saturating_sub(1);
             }
             (KeyCode::Down, _) if self.active == TabId::Services => {
+                // Clamp against the *filtered* list, same as Procs — a
+                // selection past the last visible row is invisible and
+                // scrolls the detail pane onto a service the user can't see.
                 let max = self
                     .snap
                     .as_ref()
-                    .map(|s| s.services.len().saturating_sub(1))
+                    .map(|s| {
+                        crate::tabs::services::filtered_sorted(
+                            &s.services,
+                            self.service_sort,
+                            self.filter_active.as_deref(),
+                        )
+                        .len()
+                        .saturating_sub(1)
+                    })
                     .unwrap_or(0);
                 self.service_sel = (self.service_sel + 1).min(max);
             }
@@ -1001,7 +1032,13 @@ fn draw(f: &mut ratatui::Frame, app: &App, snap: &Snapshot) {
         .as_ref()
         .filter(|(_, expires)| Instant::now() < *expires)
         .map(|(msg, _)| msg.as_str());
-    chrome::draw_footer(f, chunks[3], app.graph_style, flash);
+    chrome::draw_footer(
+        f,
+        chunks[3],
+        app.graph_style,
+        flash,
+        app.active.supports_filter(),
+    );
 
     // Modal popups paint over the dashboard. Help wins ties since it's
     // a hard requirement to read the docs even with settings open
@@ -1351,26 +1388,64 @@ mod tests {
     }
 
     #[test]
-    fn slash_and_f_both_open_the_procs_filter() {
+    fn slash_and_f_both_open_the_filter_on_every_filterable_tab() {
         // On layouts like ergol, `/` sits on the AltGr layer and can be
-        // unreachable, so `f` is an equivalent trigger. Both must open the
-        // filter, and only on the Procs tab.
-        for key in ['/', 'f'] {
-            let mut app = App::new(TabId::Procs, SyswatchConfig::default());
-            press(&mut app, key);
-            assert!(
-                app.proc_filter_input,
-                "'{key}' should open the procs filter"
-            );
+        // unreachable, so `f` is an equivalent trigger (issue #18). Both
+        // must work on every tab that has a table to search — the reporter
+        // of issue #20 hit Memory, where only Procs was wired up.
+        for tab in [TabId::Procs, TabId::Memory, TabId::Services] {
+            for key in ['/', 'f'] {
+                let mut app = App::new(tab, SyswatchConfig::default());
+                press(&mut app, key);
+                assert!(
+                    app.filter_input,
+                    "'{key}' should open the filter on {}",
+                    tab.title()
+                );
+            }
         }
     }
 
     #[test]
-    fn filter_trigger_is_inert_off_the_procs_tab() {
-        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+    fn filter_trigger_is_inert_on_unfilterable_tabs() {
+        // Tabs with no table to narrow must stay inert — and must not
+        // advertise the key either, which is checked by pairing the
+        // handler against the same `supports_filter` the footer reads.
+        for tab in [TabId::Overview, TabId::Cpu, TabId::Disks, TabId::Timeline] {
+            assert!(!tab.supports_filter(), "{} should not filter", tab.title());
+            let mut app = App::new(tab, SyswatchConfig::default());
+            press(&mut app, '/');
+            press(&mut app, 'f');
+            assert!(!app.filter_input, "{} opened a filter", tab.title());
+        }
+    }
+
+    #[test]
+    fn filter_carries_across_filterable_tabs() {
+        // One shared filter: typing it on Procs and switching to Memory
+        // keeps the narrowing, rather than silently resetting.
+        let mut app = App::new(TabId::Procs, SyswatchConfig::default());
         press(&mut app, '/');
-        press(&mut app, 'f');
-        assert!(!app.proc_filter_input);
+        press(&mut app, 's');
+        press(&mut app, 'h');
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.filter_active.as_deref(), Some("sh"));
+        press(&mut app, '3'); // Memory
+        assert_eq!(app.active, TabId::Memory);
+        assert_eq!(app.filter_active.as_deref(), Some("sh"));
+    }
+
+    #[test]
+    fn changing_the_filter_resets_both_table_selections() {
+        // The filter is shared, so a stale cursor on the *other* tab is
+        // just as out of bounds as one on the tab in view.
+        let mut app = App::new(TabId::Services, SyswatchConfig::default());
+        app.proc_sel = 12;
+        app.service_sel = 9;
+        press(&mut app, '/');
+        press(&mut app, 'x');
+        assert_eq!(app.proc_sel, 0);
+        assert_eq!(app.service_sel, 0);
     }
 
     #[test]
@@ -1379,8 +1454,8 @@ mod tests {
         // part of a filter term — input mode routes chars to the buffer.
         let mut app = App::new(TabId::Procs, SyswatchConfig::default());
         press(&mut app, '/');
-        assert!(app.proc_filter_input);
+        assert!(app.filter_input);
         press(&mut app, 'f');
-        assert_eq!(app.proc_filter_buf, "f");
+        assert_eq!(app.filter_buf, "f");
     }
 }

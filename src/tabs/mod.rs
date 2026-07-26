@@ -12,7 +12,7 @@ mod net;
 mod overview;
 mod power;
 pub mod procs;
-mod services;
+pub mod services;
 mod timeline;
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, snap: &Snapshot) {

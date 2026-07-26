@@ -90,6 +90,27 @@ const GROUPS: &[Group] = &[
         ],
     },
     Group {
+        title: "Filter — Procs, Memory, Services",
+        rows: &[
+            Row {
+                keys: "/ or f",
+                label: "Filter the table (case-insensitive substring)",
+            },
+            Row {
+                keys: "Enter",
+                label: "Apply and leave the input box",
+            },
+            Row {
+                keys: "Esc",
+                label: "Cancel — clears the filter too",
+            },
+            Row {
+                keys: "",
+                label: "One filter, shared: it follows you between those tabs",
+            },
+        ],
+    },
+    Group {
         title: "Procs tab",
         rows: &[
             Row {
@@ -99,10 +120,6 @@ const GROUPS: &[Group] = &[
             Row {
                 keys: "s",
                 label: "Cycle sort (cpu / mem / io / start / name / gpu / net)",
-            },
-            Row {
-                keys: "/ or f",
-                label: "Filter procs (Esc cancel, Enter apply)",
             },
             Row {
                 keys: "d",

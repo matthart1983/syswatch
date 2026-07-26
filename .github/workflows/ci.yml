@@ -31,3 +31,29 @@ jobs:
 
       - name: Test
         run: cargo test
+
+  # Nothing built the flake, so it silently rotted: the version was
+  # pinned five releases behind and `src` was dragging `target/` into
+  # the store. Cheap Linux-only job to keep both honest.
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Flake check
+        run: nix flake check --all-systems
+
+      - name: Build
+        run: nix build .#syswatch --print-build-logs
+
+      - name: Version matches Cargo.toml
+        run: |
+          cargo_version=$(nix eval --raw --impure --expr \
+            '(builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version')
+          built=$(nix eval --raw .#syswatch.version)
+          echo "Cargo.toml=$cargo_version  package.nix=$built"
+          test "$cargo_version" = "$built"

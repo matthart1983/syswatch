@@ -90,7 +90,7 @@ s                   →  Cycle sort (Procs, Services)
 Home / End          →  Oldest sample / live
 p                   →  Pause
 g                   →  Graph style (bars / dots)
-t                   →  Cycle theme
+t                   →  Cycle theme (incl. "terminal" — uses your terminal's own palette)
 ,                   →  Settings (tick, theme, btop-style fade)
 S / R               →  Snapshot to disk / record session
 ?                   →  Help

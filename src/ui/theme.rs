@@ -61,7 +61,73 @@ pub struct Theme {
     pub err_bg: Color,
 }
 
-pub const THEME_NAMES: &[&str] = &["dark", "light", "ocean", "solarized", "dracula", "nord"];
+pub const THEME_NAMES: &[&str] = &[
+    "dark",
+    "light",
+    "ocean",
+    "solarized",
+    "dracula",
+    "nord",
+    "terminal",
+];
+
+/// Defers entirely to the terminal's own palette: ANSI slots 0–15 for
+/// color and `Color::Reset` for foreground and background, so whatever
+/// the user's terminal theme defines is what syswatch renders. Nothing
+/// here is a fixed RGB value — that is the whole point. Users running a
+/// system-wide theming setup (pywal, matugen, a terminal profile) get a
+/// syswatch that matches the rest of their desktop without maintaining a
+/// separate palette.
+///
+/// Two deliberate compromises, both forced by the 16-color palette:
+///
+/// - `warn_bg` / `err_bg` are `Reset` rather than a tint. ANSI has no
+///   "slightly red background" — the nearest option is a full-intensity
+///   red fill, which is far louder than the subtle row tint these slots
+///   exist for. Severity still reads from the foreground
+///   (`status_warn` / `status_error`), which is how terminal-native tools
+///   convey it anyway.
+/// - `selection_bg` / `highlight_bg` use `Indexed(8)` (bright black).
+///   It is the only slot conventionally rendered as a neutral mid-grey in
+///   both light and dark themes. A terminal theme that maps slot 8 very
+///   close to its background will show a faint selection bar; that is a
+///   property of the user's theme, and the alternative — a saturated
+///   color slot — is worse everywhere else.
+///
+/// Known gap: the chart dot-grid (`ui::graph::render_grid`) still derives
+/// its color by interpolating a fixed grey toward `bg`. With `bg: Reset`
+/// the real background is unknown, so it assumes black and renders dark
+/// dots — invisible on dark terminals, too heavy on light ones. Fixing it
+/// properly means giving `Theme` its own grid slot rather than inferring
+/// one from the background.
+pub const fn terminal() -> Theme {
+    Theme {
+        name: "terminal",
+        brand: Color::Cyan,
+        active_tab: Color::Yellow,
+        inactive_tab: Color::DarkGray,
+        border: Color::DarkGray,
+        separator: Color::DarkGray,
+        // Reset = the terminal's configured foreground, exactly.
+        text_primary: Color::Reset,
+        text_secondary: Color::Gray,
+        text_muted: Color::DarkGray,
+        text_inverse: Color::Black,
+        status_good: Color::Green,
+        status_warn: Color::Yellow,
+        status_error: Color::Red,
+        status_info: Color::Cyan,
+        rx_rate: Color::Green,
+        tx_rate: Color::Magenta,
+        key_hint: Color::Yellow,
+        selection_bg: Color::Indexed(8),
+        highlight_bg: Color::Indexed(8),
+        // The reason this theme exists: never paint over the terminal.
+        bg: Color::Reset,
+        warn_bg: Color::Reset,
+        err_bg: Color::Reset,
+    }
+}
 
 pub const fn dark() -> Theme {
     // Preserve the original syswatch palette exactly, mapped to the
@@ -283,6 +349,10 @@ pub fn by_name(name: &str) -> Theme {
         "solarized" => solarized(),
         "dracula" => dracula(),
         "nord" => nord(),
+        // "system" and "ansi" are what users coming from other TUIs tend
+        // to reach for; accept both rather than silently falling back to
+        // dark and looking like the feature is missing.
+        "terminal" | "system" | "ansi" => terminal(),
         _ => dark(),
     }
 }
@@ -357,6 +427,35 @@ mod tests {
         set_by_name("dracula");
         assert_eq!(name(), "dracula");
         restore_dark();
+    }
+
+    #[test]
+    fn terminal_theme_pins_no_rgb() {
+        // The entire contract of this theme is that every slot resolves
+        // through the terminal's own palette. Debug-formatting the whole
+        // struct checks every field at once, so a slot added later can't
+        // quietly acquire a fixed color without failing here.
+        let rendered = format!("{:?}", terminal());
+        assert!(
+            !rendered.contains("Rgb"),
+            "terminal theme must not pin RGB values: {rendered}"
+        );
+    }
+
+    #[test]
+    fn terminal_theme_never_paints_backgrounds() {
+        let t = terminal();
+        assert_eq!(t.bg, Color::Reset);
+        assert_eq!(t.warn_bg, Color::Reset);
+        assert_eq!(t.err_bg, Color::Reset);
+        assert_eq!(t.text_primary, Color::Reset);
+    }
+
+    #[test]
+    fn terminal_theme_accepts_common_aliases() {
+        for alias in ["terminal", "system", "ansi", "TERMINAL", "System"] {
+            assert_eq!(by_name(alias).name, "terminal", "alias {alias} failed");
+        }
     }
 
     #[test]

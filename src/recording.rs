@@ -150,7 +150,13 @@ pub fn read(path: &Path) -> Result<Vec<Snapshot>> {
             break;
         }
         match postcard::from_bytes::<Snapshot>(&buf) {
-            Ok(s) => out.push(s),
+            // Scrub on read, not just on capture: a recording can be
+            // handed over by someone else, and may predate the scrubbing
+            // in `Collector::sample` (issue #21).
+            Ok(mut s) => {
+                crate::collect::sanitize::scrub_snapshot(&mut s);
+                out.push(s);
+            }
             // Bad record — same logic. Stop where the corruption starts
             // rather than discarding the whole file.
             Err(_) => break,

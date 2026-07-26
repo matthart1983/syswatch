@@ -11,6 +11,7 @@ use super::power::PowerCollector;
 use super::proc_bandwidth::ProcessBandwidthCollector;
 use super::proc_gpu::ProcGpuCollector;
 use super::proc_memory::ProcMemCollector;
+use super::sanitize::scrub_snapshot;
 use super::services::ServicesCollector;
 
 /// Collector keeps long-lived sysinfo handles + previous-tick counters so we can
@@ -230,7 +231,7 @@ impl Collector {
         let mut host = self.host.clone();
         host.uptime_secs = System::uptime();
 
-        Snapshot {
+        let mut snap = Snapshot {
             t: SystemTime::now(),
             host,
             cpu,
@@ -244,7 +245,11 @@ impl Collector {
             services,
             net_rates_estimated,
             pressure: collect_pressure(),
-        }
+        };
+        // Single choke point for terminal-escape scrubbing — every string
+        // above came from the kernel or another user's process (issue #21).
+        scrub_snapshot(&mut snap);
+        snap
     }
 
     fn collect_cpu(&self) -> CpuTick {

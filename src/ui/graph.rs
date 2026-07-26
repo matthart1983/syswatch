@@ -23,6 +23,7 @@ use ratatui::{
 };
 
 use crate::ui::palette as p;
+use crate::ui::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphStyle {
@@ -247,6 +248,24 @@ fn render_dots(buf: &mut Buffer, area: Rect, samples: &[f32], color: Color, opts
 /// palette so the default theme (which uses Color::Green, Color::Cyan, …)
 /// still preserves its hue at the dim end instead of fading to grayscale.
 pub fn fade_color(base: Color, bg: Color, alpha: f32) -> Color {
+    fade_color_inner(base, bg, alpha, theme::active().name == "terminal")
+}
+
+/// The decision split out from the theme lookup so it can be tested without
+/// mutating the global active theme (which would race the other fade tests).
+///
+/// `defer_to_terminal` short-circuits the interpolation: the `terminal`
+/// theme's whole contract is that syswatch emits nothing but the user's own
+/// palette, and interpolating produces 24-bit RGB for every faded cell —
+/// with fade on, the majority of the frame. There is no 16-color equivalent
+/// of a gradient, so fade degrades to off rather than to wrong and the base
+/// color passes through untouched. `bg` is also `Reset` under that theme, so
+/// the real background is unknown; fading toward an assumed black would be
+/// wrong on a light terminal regardless.
+fn fade_color_inner(base: Color, bg: Color, alpha: f32, defer_to_terminal: bool) -> Color {
+    if defer_to_terminal {
+        return base;
+    }
     let alpha = alpha.clamp(0.0, 1.0);
     let (br, bgc, bb) = to_rgb_or_default(base, (255, 255, 255));
     let (gr, gg, gb) = to_rgb_or_default(bg, (0, 0, 0));
@@ -316,7 +335,14 @@ pub fn fade_spans_fg<'a>(spans: Vec<Span<'a>>, bg: Color, alpha: f32) -> Vec<Spa
 /// Faint dot grid behind the chart. Renders before the data so any data
 /// cell overwrites a grid cell; the empty regions show the grid through.
 fn render_grid(buf: &mut Buffer, area: Rect) {
-    let grid_color = fade_color(Color::Rgb(150, 150, 150), p::bg(), 0.20);
+    // The grid's base is a fixed grey, so it would survive `fade_color`'s
+    // terminal-theme passthrough as raw RGB. Use the palette's own chrome
+    // slot instead, which is where something this quiet belongs anyway.
+    let grid_color = if theme::active().name == "terminal" {
+        p::border()
+    } else {
+        fade_color(Color::Rgb(150, 150, 150), p::bg(), 0.20)
+    };
     let cell_w = area.width as usize;
     let cell_h = area.height as usize;
     let v_step = (cell_w / 4).max(2);
@@ -396,6 +422,27 @@ mod tests {
         let area = Rect::new(0, 0, 0, 0);
         let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
         render_dots(&mut buf, area, &[1.0], Color::White, GraphOpts::default());
+    }
+
+    #[test]
+    fn fade_passes_base_through_untouched_for_terminal_theme() {
+        // With fade on, interpolation is applied to most of the frame. If
+        // it ran under the `terminal` theme every faded cell would emit
+        // 24-bit RGB and the theme would stop honoring the user's palette —
+        // measured at 623 truecolor escapes per frame before this guard.
+        let base = Color::Cyan;
+        for alpha in [0.0, 0.3, 0.55, 1.0] {
+            assert_eq!(
+                fade_color_inner(base, Color::Reset, alpha, true),
+                base,
+                "alpha {alpha} must pass through under the terminal theme"
+            );
+        }
+        // Every other theme keeps the gradient.
+        assert!(matches!(
+            fade_color_inner(Color::Rgb(200, 100, 50), Color::Rgb(0, 0, 0), 0.5, false),
+            Color::Rgb(..)
+        ));
     }
 
     #[test]

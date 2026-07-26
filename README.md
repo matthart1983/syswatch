@@ -4,9 +4,11 @@
     <strong>Single-host system diagnostics in your terminal. The terminal you open when something feels off — before you reach for htop, iostat, nettop, powermetrics, and a notebook full of one-liners.</strong>
   </p>
   <p align="center">
+    <a href="https://crates.io/crates/syswatch"><img src="https://img.shields.io/crates/v/syswatch.svg" alt="crates.io"></a>
+    <a href="https://github.com/matthart1983/syswatch/releases"><img src="https://img.shields.io/github/v/release/matthart1983/syswatch" alt="Release"></a>
+    <a href="https://repology.org/project/syswatch/versions"><img src="https://repology.org/badge/tiny-repos/syswatch.svg" alt="Packaging status"></a>
     <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue" alt="Platform">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-    <img src="https://img.shields.io/badge/version-v0.7.2-green" alt="Version">
   </p>
 </p>
 
@@ -46,16 +48,23 @@ Where `htop` shows you *what's running*, SysWatch shows you *what's happening* �
 ## Install
 
 ```bash
-# Homebrew (macOS + Linux) — prebuilt binaries
-brew install matthart1983/tap/syswatch
+brew install syswatch                 # macOS / Linux
+nix-shell -p syswatch                 # NixOS / Nix
+paru -S syswatch                      # Arch
+cargo install syswatch                # anywhere with Rust
+```
 
-# Cargo
-cargo install syswatch
+Or grab a pre-built binary from [Releases](https://github.com/matthart1983/syswatch/releases/latest).
 
+```bash
 # From source
 git clone https://github.com/matthart1983/syswatch.git && cd syswatch
 cargo build --release && ./target/release/syswatch
 ```
+
+The Nix and Arch packages are maintained by community packagers — thank you. File packaging
+issues with them; file syswatch bugs here. The [Repology page](https://repology.org/project/syswatch/versions)
+shows which packages are current.
 
 **Prerequisites (source/cargo builds):** Rust 1.75+. No system dependencies on Linux. macOS links against the system frameworks.
 

@@ -7,9 +7,25 @@
 
 rustPlatform.buildRustPackage {
   pname = "syswatch";
-  version = "0.7.0";
+  # Read from Cargo.toml rather than restated here — a hand-maintained
+  # copy silently drifted from 0.7.0 through five releases, because
+  # nothing in CI builds this file.
+  version = (lib.importTOML ./Cargo.toml).package.version;
 
-  src = lib.cleanSource ./.;
+  # `lib.cleanSource` drops VCS and editor cruft but keeps `target/`,
+  # which is multiple GB on any working checkout — every `nix build`
+  # was copying it into the store and invalidating on each cargo run.
+  # Deny-list rather than an explicit fileset: it can only over-include,
+  # so a new source file can't silently go missing from the build.
+  src = lib.cleanSourceWith {
+    src = lib.cleanSource ./.;
+    filter =
+      path: type:
+      let
+        base = baseNameOf (toString path);
+      in
+      !(type == "directory" && (base == "target" || base == ".github"));
+  };
 
   cargoLock.lockFile = ./Cargo.lock;
 

@@ -270,10 +270,19 @@ impl Collector {
     }
 
     fn collect_mem(&self) -> MemTick {
+        let total = self.sys.total_memory();
+        let mut used = self.sys.used_memory();
+        let mut available = self.sys.available_memory();
+        // Subtract ZFS ARC from used (it's reclaimable cache, not committed).
+        #[cfg(target_os = "linux")]
+        {
+            let arc = read_arc_size();
+            (used, available) = arc_adjust(used, available, arc);
+        }
         MemTick {
-            total_bytes: self.sys.total_memory(),
-            used_bytes: self.sys.used_memory(),
-            available_bytes: self.sys.available_memory(),
+            total_bytes: total,
+            used_bytes: used,
+            available_bytes: available,
             swap_total_bytes: self.sys.total_swap(),
             swap_used_bytes: self.sys.used_swap(),
             pressure_level: mem_pressure_level(),
@@ -592,6 +601,34 @@ fn collect_pressure() -> Option<PressureTick> {
     None
 }
 
+fn arc_adjust(used: u64, available: u64, arc_bytes: u64) -> (u64, u64) {
+    (used.saturating_sub(arc_bytes), available + arc_bytes)
+}
+
+/// Parse the `c` (ARC size) field from /proc/spl/kstat/zfs/arcstats text.
+fn parse_arcstats_c(text: &str) -> Option<u64> {
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.first() == Some(&"c") {
+            return parts.get(2).and_then(|v| v.parse::<u64>().ok());
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn read_arc_size() -> u64 {
+    std::fs::read_to_string("/proc/spl/kstat/zfs/arcstats")
+        .ok()
+        .and_then(|s| parse_arcstats_c(&s))
+        .unwrap_or(0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_arc_size() -> u64 {
+    0
+}
+
 /// macOS's own memory-pressure verdict, from
 /// `kern.memorystatus_vm_pressure_level`. Readable without elevation.
 ///
@@ -773,5 +810,50 @@ Threads:\t17
         assert!(threads.unwrap_or(0) >= 1);
         // Peak comes from rusage in proc_memory on macOS, not here.
         assert_eq!(peak, None);
+    }
+
+    // ── ZFS ARC adjustments ────────────────────────────────────────────
+
+    #[test]
+    fn arc_adjust_no_arc_preserves_values() {
+        // Zero ARC → no change to used or available.
+        assert_eq!(arc_adjust(100, 50, 0), (100, 50));
+    }
+
+    #[test]
+    fn arc_adjust_subtracts_from_used_adds_to_available() {
+        // 30 bytes of ARC moved from used → available.
+        assert_eq!(arc_adjust(100, 50, 30), (70, 80));
+    }
+
+    #[test]
+    fn arc_adjust_saturates_when_arc_exceeds_used() {
+        // ARC larger than used must not underflow — used clamps to 0.
+        assert_eq!(arc_adjust(100, 50, 150), (0, 200));
+    }
+
+    #[test]
+    fn parse_arcstats_c_extracts_c_from_real_output() {
+        let text = "\
+24 1 0x01 148 40256 5856356141 1344751450507729
+name                            type data
+hits                            4    2049659748
+iohits                          4    1195048
+misses                          4    4407338
+c                               4    66373946864
+c_min                           4    4217798400
+c_max                           4    133895806976
+size                            4    65967562640";
+        assert_eq!(parse_arcstats_c(text), Some(66373946864));
+    }
+
+    #[test]
+    fn parse_arcstats_c_returns_none_when_c_absent() {
+        assert_eq!(parse_arcstats_c("name  type  data\nhits  4  100\n"), None);
+    }
+
+    #[test]
+    fn parse_arcstats_c_returns_none_on_empty() {
+        assert_eq!(parse_arcstats_c(""), None);
     }
 }

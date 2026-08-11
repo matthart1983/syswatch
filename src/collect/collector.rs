@@ -276,6 +276,7 @@ impl Collector {
             available_bytes: self.sys.available_memory(),
             swap_total_bytes: self.sys.total_swap(),
             swap_used_bytes: self.sys.used_swap(),
+            pressure_level: mem_pressure_level(),
         }
     }
 
@@ -588,6 +589,47 @@ fn collect_pressure() -> Option<PressureTick> {
 
 #[cfg(not(target_os = "linux"))]
 fn collect_pressure() -> Option<PressureTick> {
+    None
+}
+
+/// macOS's own memory-pressure verdict, from
+/// `kern.memorystatus_vm_pressure_level`. Readable without elevation.
+///
+/// The values are the `DISPATCH_MEMORYPRESSURE_*` bits out of
+/// `<dispatch/source.h>` — 0x01 normal, 0x02 warn, 0x04 critical — tested
+/// most-severe-first because they are a bitmask, not an ordinal.
+#[cfg(target_os = "macos")]
+fn mem_pressure_level() -> Option<MemPressureLevel> {
+    let mut level: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: the name is NUL-terminated, and `oldp`/`oldlenp` point at a
+    // correctly-sized int for the duration of the call.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.memorystatus_vm_pressure_level".as_ptr(),
+            &mut level as *mut libc::c_int as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    if level & 0x04 != 0 {
+        Some(MemPressureLevel::Critical)
+    } else if level & 0x02 != 0 {
+        Some(MemPressureLevel::Warning)
+    } else if level & 0x01 != 0 {
+        Some(MemPressureLevel::Normal)
+    } else {
+        // A level we don't recognise is not a licence to guess.
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mem_pressure_level() -> Option<MemPressureLevel> {
     None
 }
 

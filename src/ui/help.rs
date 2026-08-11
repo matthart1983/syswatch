@@ -63,12 +63,44 @@ const GROUPS: &[Group] = &[
                 label: "Toggle session recording → .swr file",
             },
             Row {
+                keys: "L",
+                label: "Toggle the Lite view (one screen, six keys)",
+            },
+            Row {
                 keys: "?",
                 label: "Toggle this help",
             },
             Row {
                 keys: "q / Ctrl-C",
                 label: "Quit",
+            },
+        ],
+    },
+    // Lite's footer advertises six keys and has room for no more. These two
+    // are real bindings that live here instead — they are conventions from
+    // less/vim/top, so they cost a user nothing to not see.
+    Group {
+        title: "Lite view (L)",
+        rows: &[
+            Row {
+                keys: "↑ ↓ / j k",
+                label: "Move the selection",
+            },
+            Row {
+                keys: "Enter",
+                label: "Expand the selected process in place",
+            },
+            Row {
+                keys: "/",
+                label: "Filter by process name or user",
+            },
+            Row {
+                keys: "Esc",
+                label: "Close detail, then clear the filter",
+            },
+            Row {
+                keys: "L",
+                label: "Back to the full tabbed view",
             },
         ],
     },

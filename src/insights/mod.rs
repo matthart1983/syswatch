@@ -632,6 +632,7 @@ mod tests {
             available_bytes: total.saturating_sub(used),
             swap_total_bytes: swap_total,
             swap_used_bytes: swap_used,
+            ..Default::default()
         }
     }
 

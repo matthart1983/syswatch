@@ -31,6 +31,9 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
+# Lite lays out on an absolute character grid, so field clamping has to be
+# display-width aware — a CJK process name is two columns per character.
+unicode-width = "0.2"
 
 # Reuse netwatch-sdk for memory/loadavg/disk/interface collection so syswatch
 # and netwatch-agent share a single source of truth for those parsers.

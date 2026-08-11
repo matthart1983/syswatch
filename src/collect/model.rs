@@ -23,6 +23,18 @@ pub struct CpuTick {
     pub per_core: Vec<f32>, // 0..100 per logical core
 }
 
+/// The kernel's own verdict on memory pressure, where the platform has one.
+///
+/// This is deliberately a level rather than a percentage: macOS reports a
+/// three-state enum, and inventing PSI-shaped percentages from it would be a
+/// fabricated number wearing a real one's clothes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MemPressureLevel {
+    Normal,
+    Warning,
+    Critical,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct MemTick {
     pub total_bytes: u64,
@@ -30,6 +42,13 @@ pub struct MemTick {
     pub available_bytes: u64,
     pub swap_total_bytes: u64,
     pub swap_used_bytes: u64,
+    /// macOS `kern.memorystatus_vm_pressure_level` — the same authority PSI
+    /// is on Linux, and the only way to tell a Mac that is genuinely short of
+    /// RAM from one merely doing what macOS always does (holding memory full
+    /// and keeping a swap file). `None` where the platform has no such
+    /// signal; `#[serde(default)]` keeps older snapshots deserializing.
+    #[serde(default)]
+    pub pressure_level: Option<MemPressureLevel>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -318,6 +337,17 @@ mod tests {
         // the platform layer can't classify a unit; lock that in so a
         // future variant reorder doesn't silently change behavior.
         assert_eq!(ServiceStatus::default(), ServiceStatus::Unknown);
+    }
+
+    /// `.swr` recordings made before `pressure_level` existed must still
+    /// replay. `--replay` is a promise about files already on disk.
+    #[test]
+    fn mem_tick_deserializes_without_pressure_level() {
+        let old = r#"{"total_bytes":100,"used_bytes":60,"available_bytes":40,
+                      "swap_total_bytes":8,"swap_used_bytes":2}"#;
+        let m: MemTick = serde_json::from_str(old).expect("old MemTick must still parse");
+        assert_eq!(m.total_bytes, 100);
+        assert_eq!(m.pressure_level, None);
     }
 
     #[test]

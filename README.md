@@ -75,6 +75,7 @@ syswatch                       # default 1Hz tick
 syswatch --tick 500            # 2Hz
 syswatch --tab procs           # boot straight into a tab
 syswatch --replay session.swr  # scrub a recorded session
+syswatch --lite                # the one-screen Lite view
 ```
 
 ### Keys
@@ -93,9 +94,37 @@ g                   →  Graph style (bars / dots)
 t                   →  Cycle theme (incl. "terminal" — uses your terminal's own palette)
 ,                   →  Settings (tick, theme, btop-style fade)
 S / R               →  Snapshot to disk / record session
+L                   →  Toggle the Lite view
 ?                   →  Help
 q / Ctrl-C          →  Quit
 ```
+
+### Lite view
+
+`syswatch --lite`, or `L` at any time. One screen at 80×24 answering one
+question — *why is this machine hot, slow, or loud?* — with six keys and four
+colors. It is not the full tool with tabs hidden; it is a different product for
+someone with one machine, and the deliberate sibling of
+[`netwatch --lite`](https://github.com/matthart1983/netwatch): identical grid
+geometry, column positions, keys and palette, so muscle memory carries between
+them.
+
+```text
+q  quit     p  pause    /  filter (name or user)
+↵  detail   L  full     ?  help          ↑↓ / j k move   Esc unwind
+```
+
+CPU gets a three-row chart and memory two — when a machine feels wrong, CPU is
+the answer more often than RAM. A single vitals line carries temp, fan, power
+and disk throughput, each rendering `--` rather than moving when a sensor isn't
+readable. Red appears only when the machine is actually in trouble — thermal
+throttling, swap thrashing, critical memory pressure — on fixed thresholds with
+hysteresis (three samples to fire, five to clear) so it never flaps. Memory
+pressure comes from the kernel's own verdict where there is one (PSI on Linux,
+`kern.memorystatus_vm_pressure_level` on macOS) rather than being inferred from
+swap, so a Mac doing what Macs normally do doesn't read as an emergency. It follows
+your theme and graph style like every other screen, and it is read-only, same
+as the rest of syswatch.
 
 ## What's distinctive
 
@@ -115,7 +144,9 @@ q / Ctrl-C          →  Quit
 
 ## Scope
 
-All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), and the btop-style fade rendering are all live.
+All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), and the btop-style fade rendering are all live.
+
+Lite's temp / fan / power vitals depend on platform sensors: Linux reads `/sys/class/hwmon`, `/sys/class/thermal` and RAPL; macOS needs IOKit/SMC access, so on Apple Silicon those three commonly render `--` while CPU, memory, disk and processes remain fully live.
 
 **No sudo, ever.** GPU utilization, VRAM, and the renderer/tiler split on Apple Silicon come from `ioreg` (`AGXAccelerator PerformanceStatistics`); GPU temperature, per-rail power, and fans come from IOReport + SMC. Linux reads sysfs (`/sys/class/drm`, thermal zones, hwmon). Where a figure genuinely needs elevated access, the tab says so rather than prompting.
 

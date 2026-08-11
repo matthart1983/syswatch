@@ -28,6 +28,12 @@ struct Cli {
     #[arg(long)]
     tab: Option<String>,
 
+    /// Start in the Lite view: one 80×24 screen answering "why is this
+    /// machine hot, slow, or loud?" with six keys. Toggle with `L` at any
+    /// time — it is never selected automatically by terminal size.
+    #[arg(long)]
+    lite: bool,
+
     /// Replay a previously-recorded session (.swr file, written by
     /// pressing `R` during a live run). No live collection happens —
     /// arrow keys / Home / End scrub through the recorded ticks.
@@ -79,5 +85,6 @@ fn main() -> Result<()> {
         start_tab,
         config: cfg,
         replay,
+        lite: cli.lite,
     })
 }

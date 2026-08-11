@@ -30,6 +30,8 @@ pub struct Options {
     /// the run loop skips live collection entirely and the user
     /// scrubs through the recorded ticks instead.
     pub replay: Option<Vec<Snapshot>>,
+    /// Start in the Lite view (`--lite`). Opt-in only.
+    pub lite: bool,
 }
 
 /// Number of CPU-usage samples kept per process for the inline Procs sparkline.
@@ -391,9 +393,46 @@ pub enum LiveState {
     Replay,
 }
 
+/// Which of the two top-level views is rendering.
+///
+/// Lite is a deliberate counterpart to the full tabbed TUI: one screen at
+/// 80×24 answering "why is this machine hot, slow, or loud?" It is
+/// **opt-in only** — entered with `--lite` or toggled with `L`, never
+/// auto-selected by terminal size. Both views share the same collector and
+/// the same tick loop, so toggling is instant and no history is lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Full,
+    Lite,
+}
+
+/// Lite's own view state. Deliberately separate from the full TUI's
+/// `proc_sel` / `filter_*`: the two views have different row sets and
+/// different filter semantics (Lite matches name *or* user), and sharing
+/// them would make toggling views move the other view's cursor.
+#[derive(Debug, Clone, Default)]
+pub struct LiteState {
+    pub selected: usize,
+    pub offset: usize,
+    pub detail_open: bool,
+    pub filter_input: bool,
+    pub filter_text: String,
+    /// Threshold debounce for the alert state, advanced once per sample.
+    pub alerts: crate::ui::lite::AlertTracker,
+}
+
 pub struct App {
     pub active: TabId,
     pub paused: bool,
+    /// Full tabbed TUI or the single-screen Lite view.
+    pub view_mode: ViewMode,
+    /// Lite's selection, filter and alert state.
+    pub lite: LiteState,
+    /// Terminal area from the last frame. Lite's key handler needs to know
+    /// how many rows are visible in order to clamp scrolling, and only the
+    /// renderer sees the real `Rect`.
+    pub last_area: Rect,
     pub history: History,
     pub snap: Option<Snapshot>,
     pub proc_sort: ProcSort,
@@ -509,6 +548,9 @@ impl App {
         Self {
             active: start,
             paused: false,
+            view_mode: ViewMode::Full,
+            lite: LiteState::default(),
+            last_area: Rect::new(0, 0, 0, 0),
             history: History::new(120),
             snap: None,
             proc_sort: ProcSort::Cpu,
@@ -535,6 +577,92 @@ impl App {
         }
     }
 
+    /// Lite's key handler. Six advertised keys plus the two conventions the
+    /// footer doesn't have room to advertise (`↑↓`/`jk` and `Esc`).
+    fn handle_lite_key(&mut self, k: KeyEvent) -> bool {
+        use crate::ui::lite;
+
+        // Filter input swallows printable keys, so it has to be checked
+        // before anything that reads a bare char.
+        if self.lite.filter_input {
+            match (k.code, k.modifiers) {
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
+                (KeyCode::Esc, _) => {
+                    self.lite.filter_input = false;
+                    self.lite.filter_text.clear();
+                    self.lite.selected = 0;
+                    self.lite.offset = 0;
+                }
+                // Commit but keep it applied — the list stays narrowed so
+                // ↵ can then open detail on a match.
+                (KeyCode::Enter, _) => self.lite.filter_input = false,
+                (KeyCode::Backspace, _) => {
+                    self.lite.filter_text.pop();
+                    self.lite.selected = 0;
+                    self.lite.offset = 0;
+                }
+                (KeyCode::Char(c), _) => {
+                    self.lite.filter_text.push(c);
+                    self.lite.selected = 0;
+                    self.lite.offset = 0;
+                }
+                _ => {}
+            }
+            return false;
+        }
+
+        let count = match self.displayed_snap() {
+            Some(snap) => lite::filter_procs(
+                lite::collect_procs(snap, &self.history),
+                &self.lite.filter_text,
+            )
+            .len(),
+            None => 0,
+        };
+        let visible = lite::Layout::new(self.last_area).visible_procs(self.lite.detail_open);
+
+        match (k.code, k.modifiers) {
+            (KeyCode::Char('q'), _) => return true,
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
+            (KeyCode::Char('L'), _) => {
+                // The other half of the toggle; the full TUI owns Full→Lite.
+                self.view_mode = ViewMode::Full;
+                self.lite.detail_open = false;
+                self.lite.filter_input = false;
+            }
+            (KeyCode::Char('?'), _) => self.help_active = true,
+            (KeyCode::Char('p'), _) => self.paused = !self.paused,
+            (KeyCode::Char('/'), _) => {
+                self.lite.filter_input = true;
+                self.lite.filter_text.clear();
+            }
+            // Expands whatever is selected. The selection never moves.
+            (KeyCode::Enter, _) => self.lite.detail_open = !self.lite.detail_open,
+            (KeyCode::Esc, _) => {
+                // Esc unwinds one layer at a time: detail, then the filter.
+                if self.lite.detail_open {
+                    self.lite.detail_open = false;
+                } else if !self.lite.filter_text.is_empty() {
+                    self.lite.filter_text.clear();
+                    self.lite.selected = 0;
+                    self.lite.offset = 0;
+                }
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                if count > 0 {
+                    self.lite.selected = (self.lite.selected + 1).min(count - 1);
+                }
+            }
+            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                self.lite.selected = self.lite.selected.saturating_sub(1);
+            }
+            _ => {}
+        }
+
+        clamp_lite_scroll(&mut self.lite, count, visible);
+        false
+    }
+
     /// Send every filterable tab's cursor back to the top. The filter is
     /// shared across tabs, so changing it invalidates each of their
     /// selections — not just the one currently on screen.
@@ -546,6 +674,12 @@ impl App {
     fn handle_key(&mut self, k: KeyEvent) -> bool {
         if k.kind != KeyEventKind::Press {
             return false;
+        }
+        // Lite owns its whole key surface — it has six advertised keys, not
+        // twelve tabs — so it routes before any of the full TUI's handling.
+        // The `?` overlay is the one thing the two views share.
+        if self.view_mode == ViewMode::Lite && !self.help_active {
+            return self.handle_lite_key(k);
         }
         // Filter input mode — narrow keyboard scope so chars typed into
         // the search box don't also fire dashboard hotkeys.
@@ -665,6 +799,8 @@ impl App {
                 let next = crate::ui::theme::cycle();
                 self.user_config.theme = next.into();
             }
+            // The other half of the Lite toggle; `handle_lite_key` owns Lite→Full.
+            (KeyCode::Char('L'), _) => self.view_mode = ViewMode::Lite,
             (KeyCode::Char('1'), _) => self.active = TabId::Overview,
             (KeyCode::Char('2'), _) => self.active = TabId::Cpu,
             (KeyCode::Char('3'), _) => self.active = TabId::Memory,
@@ -875,6 +1011,35 @@ fn prev_tab(t: TabId) -> TabId {
     ALL_TABS[(i + ALL_TABS.len() - 1) % ALL_TABS.len()]
 }
 
+/// Keep the selection inside the visible window, and — when detail is open —
+/// far enough from the bottom that its three rows fit before the prompt row.
+///
+/// This is what lets `↵` expand in place without moving the selection: if the
+/// selected row would fall outside the shortened list, the list scrolls to it
+/// rather than the cursor jumping to the list.
+fn clamp_lite_scroll(lite: &mut LiteState, count: usize, visible: u16) {
+    if count == 0 {
+        lite.selected = 0;
+        lite.offset = 0;
+        return;
+    }
+    lite.selected = lite.selected.min(count - 1);
+    let visible = visible.max(1) as usize;
+
+    if lite.selected < lite.offset {
+        lite.offset = lite.selected;
+    }
+    // The detail block consumes rows *below* the selected row, so when it's
+    // open the selection must sit at least DETAIL_ROWS above the window
+    // bottom. `visible` already excludes those rows, so the same arithmetic
+    // covers both cases.
+    if lite.selected >= lite.offset + visible {
+        lite.offset = lite.selected + 1 - visible;
+    }
+    let max_offset = count.saturating_sub(visible);
+    lite.offset = lite.offset.min(max_offset);
+}
+
 pub fn run(opts: Options) -> Result<()> {
     // Replay mode forces Timeline as the starting tab — that's where
     // the scrubber lives — unless the user explicitly passed --tab.
@@ -891,6 +1056,9 @@ pub fn run(opts: Options) -> Result<()> {
     };
 
     let mut app = App::new(start, opts.config);
+    if opts.lite {
+        app.view_mode = ViewMode::Lite;
+    }
 
     // Populate History from the recording up front, then plant the
     // scrubber at oldest tick so the user sees the start. Live
@@ -947,6 +1115,12 @@ pub fn run(opts: Options) -> Result<()> {
                     let s = c.sample();
                     app.history.push(&s);
                     app.insights = insights::compute(&app.history, &s);
+                    // Advance Lite's threshold debounce once per *sample*.
+                    // Doing this at render time would tie the alert window
+                    // to the frame rate instead of the collection interval.
+                    let swap_rate =
+                        crate::ui::lite::swap_rate(&app.history, app.user_config.tick_ms);
+                    app.lite.alerts.update(&s, swap_rate);
                     // Append to active recording (best-effort — we
                     // don't want one bad write to brick the live UI).
                     if let Some(rec) = app.recorder.as_mut() {
@@ -964,6 +1138,12 @@ pub fn run(opts: Options) -> Result<()> {
                 // pre-populated and the scrubber drives displayed_snap.
             }
             last_tick = Instant::now();
+        }
+
+        // Lite's key handler needs the frame geometry to clamp scrolling,
+        // and only the renderer normally sees it.
+        if let Ok(size) = term.size() {
+            app.last_area = Rect::new(0, 0, size.width, size.height);
         }
 
         if let Some(snap) = app.displayed_snap() {
@@ -993,6 +1173,15 @@ pub fn run(opts: Options) -> Result<()> {
 fn draw(f: &mut ratatui::Frame, app: &App, snap: &Snapshot) {
     let area = f.area();
     if area.width < 20 || area.height < 6 {
+        return;
+    }
+    // Lite owns the whole frame — no header, no tab bar, no footer chrome.
+    // That is the point: one screen, and every row of it is content.
+    if app.view_mode == ViewMode::Lite {
+        crate::ui::lite::render(f, app, snap);
+        if app.help_active {
+            crate::ui::help::render(f, area);
+        }
         return;
     }
     let chunks = Layout::default()
@@ -1366,6 +1555,304 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Lite writes to absolute cell coordinates rather than laying out with
+    /// ratatui widgets, so an off-by-one in a column constant is a panic, not
+    /// a cosmetic bug. Sweep every state at every plausible size.
+    #[test]
+    fn lite_draw_does_not_panic_across_sizes_and_states() {
+        use crate::collect::{CpuTick, FanTick, MemTick, PowerTick, ThermalZone};
+        use crate::config::SyswatchConfig;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mk = || Snapshot {
+            host: crate::collect::HostInfo {
+                hostname: "jules-mbp".into(),
+                cpu_cores: 10,
+                uptime_secs: 348_000,
+                ..Default::default()
+            },
+            cpu: CpuTick {
+                usage_pct: 40.0,
+                load_1: 1.42,
+                per_core: vec![20.0, 60.0, 90.0, 10.0],
+                ..Default::default()
+            },
+            mem: MemTick {
+                total_bytes: 34_359_738_368,
+                used_bytes: 21_260_179_865,
+                available_bytes: 13_099_558_503,
+                ..Default::default()
+            },
+            power: PowerTick {
+                thermal_zones: vec![ThermalZone {
+                    name: "CPU package".into(),
+                    temp_c: 52.0,
+                }],
+                fans: vec![FanTick {
+                    name: "fan0".into(),
+                    rpm: 1800,
+                    target_rpm: None,
+                }],
+                system_power_w: Some(11.0),
+                ..Default::default()
+            },
+            // A long CJK name and an empty one — the two shapes most likely
+            // to overflow a fixed-width column.
+            procs: vec![
+                ProcTick {
+                    pid: 1,
+                    name: "firefox".into(),
+                    user: "jules".into(),
+                    cpu_pct: 18.4,
+                    threads: Some(89),
+                    ..Default::default()
+                },
+                ProcTick {
+                    pid: 2,
+                    name: "网络监视器进程网络监视器".into(),
+                    user: "_windowserver".into(),
+                    cpu_pct: 6.4,
+                    threads: None,
+                    ..Default::default()
+                },
+                ProcTick {
+                    pid: 3,
+                    name: String::new(),
+                    user: String::new(),
+                    cpu_pct: 0.0,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        // Below the reference grid, at it, and well beyond it.
+        let sizes = [
+            (10u16, 5u16),
+            (40, 12),
+            (79, 23),
+            (80, 24),
+            (81, 25),
+            (200, 60),
+        ];
+
+        for &(w, h) in &sizes {
+            for &(detail, filtering, filter) in &[
+                (false, false, ""),
+                (true, false, ""),
+                (false, true, "fire"),
+                (false, false, "zzz-matches-nothing"),
+                (true, true, "j"),
+            ] {
+                let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+                app.view_mode = ViewMode::Lite;
+                for _ in 0..3 {
+                    app.history.push(&mk());
+                }
+                let last = mk();
+                app.snap = Some(last.clone());
+                app.lite.detail_open = detail;
+                app.lite.filter_input = filtering;
+                app.lite.filter_text = filter.into();
+                // Selection past the end of a filtered list is exactly the
+                // state a user reaches by filtering after scrolling down.
+                app.lite.selected = 2;
+
+                for paused in [false, true] {
+                    app.paused = paused;
+                    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                    terminal.draw(|f| draw(f, &app, &last)).unwrap_or_else(|e| {
+                        panic!(
+                            "lite draw panicked: size={}x{} detail={} filter={:?} paused={}: {e}",
+                            w, h, detail, filter, paused
+                        )
+                    });
+                }
+            }
+        }
+    }
+
+    /// Toggling views must not disturb the other view's cursor, and leaving
+    /// Lite must close its transient state so returning is a clean screen.
+    #[test]
+    fn lite_toggle_round_trips_without_leaking_state() {
+        use crate::config::SyswatchConfig;
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut app = App::new(TabId::Procs, SyswatchConfig::default());
+        app.proc_sel = 4;
+        app.snap = Some(snap_with(vec![proc(1, 10.0), proc(2, 5.0)]));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('L')));
+        assert_eq!(app.view_mode, ViewMode::Lite);
+
+        app.lite.detail_open = true;
+        app.handle_key(KeyEvent::from(KeyCode::Char('L')));
+
+        assert_eq!(app.view_mode, ViewMode::Full);
+        assert!(!app.lite.detail_open, "detail should close on leaving Lite");
+        assert!(!app.lite.filter_input, "filter input should close too");
+        assert_eq!(app.proc_sel, 4, "the full TUI's cursor must not move");
+        assert_eq!(app.active, TabId::Procs, "nor its tab");
+    }
+
+    /// While the filter box is open it owns every printable key — including
+    /// the ones that are hotkeys everywhere else. Typing "L" searches for L.
+    #[test]
+    fn lite_filter_input_swallows_hotkeys() {
+        use crate::config::SyswatchConfig;
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        app.view_mode = ViewMode::Lite;
+        app.snap = Some(snap_with(vec![proc(1, 10.0)]));
+        app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+        assert!(app.lite.filter_input);
+
+        for c in ['L', 'p', 'q', '?'] {
+            app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        assert_eq!(app.lite.filter_text, "Lpq?");
+        assert_eq!(app.view_mode, ViewMode::Lite, "L must not have toggled");
+        assert!(!app.paused, "p must not have paused");
+        assert!(!app.help_active, "? must not have opened help");
+    }
+
+    /// `p` pauses from either view — the two share one collector, so the
+    /// pause has to be the same pause.
+    #[test]
+    fn lite_pause_is_the_app_pause() {
+        use crate::config::SyswatchConfig;
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        app.view_mode = ViewMode::Lite;
+        app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+        assert!(app.paused);
+        app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+        assert!(!app.paused);
+    }
+
+    /// Opening detail expands the selected row; it must never reassign the
+    /// selection to make room (the design draft's "moves to index 1").
+    #[test]
+    fn lite_detail_does_not_move_the_selection() {
+        use crate::config::SyswatchConfig;
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        app.view_mode = ViewMode::Lite;
+        app.last_area = Rect::new(0, 0, 80, 24);
+        app.snap = Some(snap_with(
+            (0..8).map(|i| proc(i, 10.0 - i as f32)).collect(),
+        ));
+
+        for _ in 0..3 {
+            app.handle_key(KeyEvent::from(KeyCode::Down));
+        }
+        assert_eq!(app.lite.selected, 3);
+
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.lite.detail_open);
+        assert_eq!(app.lite.selected, 3, "detail must not move the selection");
+
+        // Selecting deep into the list with detail open scrolls instead.
+        for _ in 0..4 {
+            app.handle_key(KeyEvent::from(KeyCode::Down));
+        }
+        assert_eq!(app.lite.selected, 7);
+        let visible = crate::ui::lite::Layout::new(app.last_area).visible_procs(true) as usize;
+        assert!(
+            app.lite.selected < app.lite.offset + visible,
+            "selection {} scrolled out of the {}-row window at offset {}",
+            app.lite.selected,
+            visible,
+            app.lite.offset
+        );
+    }
+
+    /// Esc unwinds one layer at a time rather than dumping every bit of
+    /// state at once — the same behaviour NetWatch Lite has.
+    #[test]
+    fn lite_esc_unwinds_one_layer_at_a_time() {
+        use crate::config::SyswatchConfig;
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        app.view_mode = ViewMode::Lite;
+        app.snap = Some(snap_with(vec![proc(1, 10.0)]));
+        app.lite.filter_text = "fire".into();
+        app.lite.detail_open = true;
+
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert!(!app.lite.detail_open);
+        assert_eq!(
+            app.lite.filter_text, "fire",
+            "filter survives the first Esc"
+        );
+
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert!(app.lite.filter_text.is_empty());
+    }
+
+    #[test]
+    #[ignore = "samples the live machine; run explicitly"]
+    fn lite_renders_live_sample() {
+        use crate::config::SyswatchConfig;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut c = Collector::new(1000);
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        app.view_mode = ViewMode::Lite;
+        let mut last = c.sample();
+        for _ in 0..3 {
+            std::thread::sleep(Duration::from_millis(400));
+            last = c.sample();
+            app.history.push(&last);
+            let sr = crate::ui::lite::swap_rate(&app.history, 400);
+            app.lite.alerts.update(&last, sr);
+        }
+        app.snap = Some(last.clone());
+
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| draw(f, &app, &last)).unwrap();
+        let buf = term.backend().buffer();
+        let rows: Vec<String> = (0..24)
+            .map(|y| {
+                (0..80)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect::<String>()
+            })
+            .collect();
+        for r in &rows {
+            println!("|{}", r.trim_end());
+        }
+
+        // Real data must actually reach the screen — a Lite that renders its
+        // chrome perfectly around empty fields is the failure mode a
+        // fixture-driven test can't see.
+        assert!(rows[0].starts_with(" syswatch  "), "header: {:?}", rows[0]);
+        assert!(
+            rows[0].contains(&last.host.hostname),
+            "hostname missing: {:?}",
+            rows[0]
+        );
+        assert!(rows[2].contains("% cpu"), "cpu label: {:?}", rows[2]);
+        assert!(rows[6].contains("GB /"), "mem label: {:?}", rows[6]);
+        assert!(rows[9].contains("ago") && rows[9].contains("now"));
+        assert!(rows[10].starts_with(" temp "), "vitals: {:?}", rows[10]);
+        for (k, label) in crate::ui::lite::FOOTER_KEYS {
+            assert!(rows[23].contains(label), "footer missing {} {}", k, label);
+        }
+        // The live machine has processes; at least the first row must be one.
+        assert!(
+            !rows[14].trim().is_empty(),
+            "no process rows rendered from a live sample"
+        );
     }
 
     #[test]

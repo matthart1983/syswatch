@@ -387,6 +387,27 @@ pub fn cycle() -> &'static str {
 mod tests {
     use super::*;
 
+    /// `ACTIVE` is process-global, and the test harness runs tests on
+    /// parallel threads — so the tests that *mutate* the active theme have to
+    /// take turns. Without this they interleave and fail intermittently
+    /// (roughly 1 run in 20), each one reading a theme the other just set.
+    ///
+    /// Tests that only read (`by_name`, `dark()`, `terminal()`) touch no
+    /// global state and need no lock.
+    static ACTIVE_THEME_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Serialize a test that sets the global theme, and hand back a clean
+    /// starting state. The guard holds the lock until the test ends.
+    fn exclusive_theme() -> std::sync::MutexGuard<'static, ()> {
+        // A panic in one such test poisons the mutex; that shouldn't cascade
+        // into failures in the others, so recover the guard either way.
+        let guard = ACTIVE_THEME_TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        restore_dark();
+        guard
+    }
+
     fn restore_dark() {
         set_by_name("dark");
     }
@@ -407,7 +428,7 @@ mod tests {
 
     #[test]
     fn cycle_visits_every_theme() {
-        restore_dark();
+        let _guard = exclusive_theme();
         let mut seen = Vec::new();
         for _ in 0..THEME_NAMES.len() {
             seen.push(cycle());
@@ -423,7 +444,7 @@ mod tests {
 
     #[test]
     fn set_by_name_changes_active() {
-        restore_dark();
+        let _guard = exclusive_theme();
         set_by_name("dracula");
         assert_eq!(name(), "dracula");
         restore_dark();

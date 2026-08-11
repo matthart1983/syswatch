@@ -118,12 +118,13 @@ q  quit     p  pause    /  filter (name or user)
 ↵  detail   L  full     ?  help          ↑↓ / j k move   Esc unwind
 ```
 
-Recorded with `vhs demo-lite.tape` at `--tick 250` so the charts fill inside a
-GIF — they hold one sample per column and fill from the right in real time, so
-at the 1 Hz default the 78-column chart takes 78 seconds. Nothing is
-fast-forwarded: the axis label measures the history it is actually showing, and
-the sparkline header reports its own span, so both say what the faster tick
-did.
+Recorded with `vhs demo-lite.tape` in the btop-style look — braille area plots
+(`g`) over the faint dot grid, with the right-bright / left-dim gradient — at
+`--tick 250` so the charts fill inside a GIF. They hold one sample per column
+and fill from the right in real time, so at the 1 Hz default the 78-column
+chart takes 78 seconds. Nothing is fast-forwarded: the axis label measures the
+history it is actually showing, and the sparkline header reports its own span,
+so both say what the faster tick did.
 
 CPU gets a three-row chart and memory two — when a machine feels wrong, CPU is
 the answer more often than RAM. A single vitals line carries temp, fan, power

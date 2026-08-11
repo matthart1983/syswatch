@@ -8,13 +8,14 @@
 # untouched. (NetWatch learned this the hard way — a release GIF shipped in the
 # wrong theme because the recording inherited the operator's config.)
 #
-# The pinned values are syswatch's own defaults rather than the palette-
-# deferring "terminal" theme NetWatch Lite records under: this GIF sits beside
-# demo.gif in the same README, and the two should look like one product.
+# The theme is syswatch's own rather than the palette-deferring "terminal"
+# theme NetWatch Lite records under: this GIF sits beside demo.gif in the same
+# README, and the two should look like one product.
 #
-# `graph_fade` only reaches Lite's sparklines — under `bars` the CPU and memory
-# charts stack eighths in a flat color by design (see `lite::draw_chart`), so
-# fade is a no-op there rather than something the recording suppresses.
+# `dots` + `graph_fade` is the btop-style look: braille area plots over the
+# faint dot grid, with the right-bright / left-dim gradient. Both come from
+# `graph::render`, which the `dots` path delegates to — `bars` in Lite stacks
+# eighths itself (see `lite::draw_chart`) and so draws no grid at all.
 #
 # Usage (from a tape):  export HOME=$(./scripts/demo-lite-env.sh)
 set -euo pipefail
@@ -27,7 +28,7 @@ mkdir -p "$CFG_DIR" "$DEMO_HOME/.config/syswatch"
 
 cat > "$CFG_DIR/config.toml" <<'TOML'
 theme = "dark"
-graph_style = "bars"
+graph_style = "dots"
 graph_fade = true
 default_tab = "overview"
 tick_ms = 1000

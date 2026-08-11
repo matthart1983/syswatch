@@ -200,12 +200,33 @@ pub const FIELDS: &[Field] = &[
         x: 62,
         w: 7,
     },
+    // The header is a placeholder: the real one is computed from the tick,
+    // because the span this sparkline covers depends on it. See
+    // `spark_header`. Kept the same display width as the widest computed
+    // value so the const layout assertions still describe the real column.
     Field {
-        header: "60s",
+        header: "···",
         x: 70,
         w: SPARK_W,
     },
 ];
+
+/// The `60s`-style label over the per-process sparkline.
+///
+/// Derived rather than fixed: the sparkline is exactly
+/// [`crate::app::PROC_CPU_SPARK_LEN`] samples deep, so the wall-clock span it
+/// covers is that times the tick. It shipped as a hardcoded `60s`, which was
+/// wrong at every tick — at the 1 Hz default the eight samples are eight
+/// seconds, not sixty. A column that misreports its own time base is worse
+/// than one with no label at all.
+pub fn spark_header(tick_ms: u64) -> String {
+    let secs = (crate::app::PROC_CPU_SPARK_LEN as u64).saturating_mul(tick_ms.max(1)) / 1000;
+    if secs >= 120 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}s", secs.max(1))
+    }
+}
 
 /// Index into [`FIELDS`], so render code names a column rather than counting.
 pub const F_PROCESS: usize = 0;
@@ -1207,6 +1228,31 @@ fn peak_avg(ring: &crate::collect::Ring<f32>, window: usize) -> (u32, u32) {
 }
 
 /// Row 9 — the shared time axis.
+/// How far back the leftmost chart column actually reaches.
+///
+/// Measured from the recorded sample timestamps rather than multiplying the
+/// configured tick by the sample count, because the tick is a target the
+/// collector does not always meet: on a busy machine, or at an aggressive
+/// `--tick`, a sample can cost more than the interval asked for and the loop
+/// simply runs late. Multiplying then under-reports the window — a 250ms tick
+/// that really costs ~420ms labels 22 seconds of history as "13s ago".
+///
+/// Falls back to the tick estimate when there aren't two timestamps to
+/// subtract, or when they're non-monotonic (a wall-clock adjustment mid-run).
+fn window_label(history: &crate::app::History, tick_ms: u64, samples: usize) -> String {
+    let measured = (|| {
+        let newest = history.session.nth_back(0)?;
+        let oldest = history.session.nth_back(samples.checked_sub(1)?)?;
+        let secs = newest.t.duration_since(oldest.t).ok()?.as_secs();
+        (secs > 0).then_some(secs)
+    })();
+    match measured {
+        Some(secs) if secs >= 120 => format!(" {}m ago ", secs / 60),
+        Some(secs) => format!(" {}s ago ", secs),
+        None => fmt_window(samples, tick_ms),
+    }
+}
+
 fn render_axis(f: &mut Frame, l: &Layout, app: &App) {
     let y = l.row_procs - ROW_PROCS + ROW_AXIS;
     let end = l.content_x_end();
@@ -1228,7 +1274,7 @@ fn render_axis(f: &mut Frame, l: &Layout, app: &App) {
         f,
         l.content_x,
         y,
-        &fmt_window(samples, app.user_config.tick_ms),
+        &window_label(&app.history, app.user_config.tick_ms, samples),
         dim,
         end,
     );
@@ -1339,7 +1385,14 @@ fn render_table(f: &mut Frame, l: &Layout, app: &App, procs: &[LiteProc], paused
         dim,
         end,
     );
-    put(f, l.x_spark, head_y, FIELDS[F_SPARK].header, dim, end);
+    put(
+        f,
+        l.x_spark,
+        head_y,
+        &spark_header(app.user_config.tick_ms),
+        dim,
+        end,
+    );
 
     let rule: String = "─".repeat(l.content_w as usize);
     put(
@@ -1880,6 +1933,71 @@ mod tests {
         assert_eq!(fmt_window(12, 1000), " 12s ago ");
         // A slower tick covers more wall-clock in the same columns.
         assert_eq!(fmt_window(78, 2000), " 2m ago ");
+    }
+
+    /// The axis window must measure the history it is labelling, not restate
+    /// the tick that was asked for. A collector that can't keep up with an
+    /// aggressive `--tick` runs late, and multiplying count by interval then
+    /// under-reports the window by however far behind it fell.
+    #[test]
+    fn window_label_measures_real_elapsed_time_not_the_requested_tick() {
+        use std::time::Duration;
+
+        // Asked for 4 Hz, but each sample really cost 500ms — so the loop
+        // ran late and the history spans twice what the tick implies.
+        let mut h = crate::app::History::new(120);
+        let base = std::time::SystemTime::UNIX_EPOCH;
+        for i in 0..40u64 {
+            h.push(&Snapshot {
+                t: base + Duration::from_millis(i * 500),
+                ..Default::default()
+            });
+        }
+
+        // 40 samples, 39 gaps of 500ms = 19s of real history. The tick
+        // estimate would have claimed 40 * 250ms = 10s.
+        assert_eq!(window_label(&h, 250, 40), " 19s ago ");
+        assert_eq!(
+            fmt_window(40, 250),
+            " 10s ago ",
+            "precondition: the estimate really is the wrong answer here"
+        );
+
+        // A partial window measures only the columns actually shown.
+        assert_eq!(window_label(&h, 250, 11), " 5s ago ");
+    }
+
+    /// With nothing to subtract, fall back rather than render a bare "0s".
+    #[test]
+    fn window_label_falls_back_before_two_samples_exist() {
+        let mut h = crate::app::History::new(120);
+        assert_eq!(window_label(&h, 1000, 0), fmt_window(0, 1000));
+
+        h.push(&Snapshot::default());
+        assert_eq!(window_label(&h, 1000, 1), fmt_window(1, 1000));
+    }
+
+    /// The sparkline column header must describe the span it actually shows.
+    /// It shipped as a hardcoded "60s" against an 8-sample ring — wrong at
+    /// every tick, and most visibly at the 1 Hz default.
+    #[test]
+    fn spark_header_tracks_the_tick_and_the_ring_depth() {
+        // Tied to the ring, not to a number typed twice: if the depth
+        // changes, this test follows it rather than going quietly stale.
+        let depth = crate::app::PROC_CPU_SPARK_LEN as u64;
+        assert_eq!(spark_header(1000), format!("{depth}s"));
+        assert_eq!(spark_header(500), format!("{}s", depth / 2));
+        assert_eq!(spark_header(60_000), format!("{}m", depth));
+
+        // Never wider than the column it labels, at any tick.
+        for tick in [50, 250, 1000, 2000, 10_000, 600_000] {
+            assert!(
+                spark_header(tick).width() <= SPARK_W as usize,
+                "header for tick {tick} overflows the sparkline column"
+            );
+        }
+        // And never empty, however fast the tick.
+        assert_eq!(spark_header(1), "1s");
     }
 
     #[test]

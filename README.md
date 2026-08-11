@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <em>Sibling to <a href="https://github.com/matthart1983/netwatch">NetWatch</a> (network) and <a href="https://github.com/matthart1983/diskwatch">DiskWatch</a> (disk). Same chrome. Same palette. Twelve tabs covering everything that runs on one box.</em>
+  <em>Sibling to <a href="https://github.com/matthart1983/netwatch">NetWatch</a> (network) and <a href="https://github.com/matthart1983/diskwatch">DiskWatch</a> (disk). Same chrome. Same palette. Twelve tabs covering everything that runs on one box — or <a href="#lite-view">one screen</a> when that's the whole question.</em>
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <strong>New in v0.7.2:</strong> honest per-process accounting — %MEM utilisation columns, a deep Memory-tab breakdown (PSS / private / swap on Linux, footprint on macOS), measured per-process network on macOS via nettop (estimates marked <code>~</code>), Linux PSI pressure readouts, peak memory, real thread counts, read/write IO split, IOKit disk IO, and per-process energy attribution on Apple Silicon. No sudo.
+  <strong>New in v0.8.0:</strong> the <a href="#lite-view">Lite view</a> — <code>syswatch --lite</code>, or <code>L</code> at any time. One 80×24 screen answering <em>"why is this machine hot, slow, or loud?"</em> with six keys, for when twelve tabs is the wrong instrument: one box, an SSH session, a tmux split. The full view is one keypress away with the collector already warm.
 </p>
 
 ---
@@ -109,10 +109,21 @@ someone with one machine, and the deliberate sibling of
 geometry, column positions, keys and palette, so muscle memory carries between
 them.
 
+<p align="center">
+  <img src="demo-lite.gif" alt="SysWatch Lite: one 80×24 screen with live CPU and memory charts, a vitals line carrying temp, fan, power and disk, and processes sorted by CPU — expanding one in place, then filtering the list live" width="820">
+</p>
+
 ```text
 q  quit     p  pause    /  filter (name or user)
 ↵  detail   L  full     ?  help          ↑↓ / j k move   Esc unwind
 ```
+
+Recorded with `vhs demo-lite.tape` at `--tick 250` so the charts fill inside a
+GIF — they hold one sample per column and fill from the right in real time, so
+at the 1 Hz default the 78-column chart takes 78 seconds. Nothing is
+fast-forwarded: the axis label measures the history it is actually showing, and
+the sparkline header reports its own span, so both say what the faster tick
+did.
 
 CPU gets a three-row chart and memory two — when a machine feels wrong, CPU is
 the answer more often than RAM. A single vitals line carries temp, fan, power

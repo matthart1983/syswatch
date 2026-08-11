@@ -383,30 +383,37 @@ pub fn cycle() -> &'static str {
     next
 }
 
+/// `ACTIVE` is process-global, and the test harness runs tests on parallel
+/// threads — so every test that *mutates* the active theme has to take turns,
+/// wherever in the crate it lives. Without this they interleave and fail
+/// intermittently (roughly 1 run in 20), each one reading a theme another just
+/// set.
+///
+/// Tests that only read (`by_name`, `dark()`, `terminal()`) touch no global
+/// state and need no lock.
+#[cfg(test)]
+static ACTIVE_THEME_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialize a test that sets the global theme, and hand back a clean starting
+/// state. The guard holds the lock until the test ends.
+///
+/// Crate-visible because the theme is crate-wide: `ui::lite`'s background test
+/// sets it too, and a second module racing the first would reintroduce exactly
+/// the flake this exists to prevent.
+#[cfg(test)]
+pub(crate) fn exclusive_theme() -> std::sync::MutexGuard<'static, ()> {
+    // A panic in one such test poisons the mutex; that shouldn't cascade into
+    // failures in the others, so recover the guard either way.
+    let guard = ACTIVE_THEME_TESTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    set_by_name("dark");
+    guard
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `ACTIVE` is process-global, and the test harness runs tests on
-    /// parallel threads — so the tests that *mutate* the active theme have to
-    /// take turns. Without this they interleave and fail intermittently
-    /// (roughly 1 run in 20), each one reading a theme the other just set.
-    ///
-    /// Tests that only read (`by_name`, `dark()`, `terminal()`) touch no
-    /// global state and need no lock.
-    static ACTIVE_THEME_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Serialize a test that sets the global theme, and hand back a clean
-    /// starting state. The guard holds the lock until the test ends.
-    fn exclusive_theme() -> std::sync::MutexGuard<'static, ()> {
-        // A panic in one such test poisons the mutex; that shouldn't cascade
-        // into failures in the others, so recover the guard either way.
-        let guard = ACTIVE_THEME_TESTS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        restore_dark();
-        guard
-    }
 
     fn restore_dark() {
         set_by_name("dark");

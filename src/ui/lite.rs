@@ -948,6 +948,29 @@ fn draw_sparkline(f: &mut Frame, app: &App, x: u16, y: u16, data: &[f32], color:
     );
 }
 
+/// Paint the theme's background across the whole view.
+///
+/// Lite draws straight to cells rather than rendering ratatui widgets, so
+/// without this only the cells it actually touches carry a background — and
+/// the chart renderers set one per glyph. On any terminal whose own background
+/// differs from the theme's, that showed up as a dark fringe hugging the top
+/// edge of every bar (the unfilled half of a partial block glyph) and as chart
+/// bands in a visibly different shade from the rest of the screen.
+///
+/// A no-op under the `terminal` theme, where `p::bg()` is `Color::Reset` —
+/// which is exactly what an untouched cell already holds, so the theme that
+/// promises to pin no colors still pins none.
+fn fill_bg(f: &mut Frame, area: Rect) {
+    let bg = p::bg();
+    for y in area.y..area.y.saturating_add(area.height) {
+        for x in area.x..area.x.saturating_add(area.width) {
+            if let Some(cell) = f.buffer_mut().cell_mut((x, y)) {
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
+
 /// Tint a full-width row for the selection.
 fn tint_row(f: &mut Frame, l: &Layout, y: u16, bg: Color) {
     for x in l.content_x..=l.content_x_end() {
@@ -961,6 +984,10 @@ fn tint_row(f: &mut Frame, l: &Layout, y: u16, bg: Color) {
 
 pub fn render(f: &mut Frame, app: &App, snap: &Snapshot) {
     let area = f.area();
+    // Before anything else: every later writer either sets its own background
+    // or deliberately leaves one alone (the selection tint), so this has to be
+    // the floor rather than a later pass.
+    fill_bg(f, area);
     if area.width < GRID_W || area.height < GRID_H {
         render_too_small(f, area);
         return;
@@ -1933,6 +1960,46 @@ mod tests {
         assert_eq!(fmt_window(12, 1000), " 12s ago ");
         // A slower tick covers more wall-clock in the same columns.
         assert_eq!(fmt_window(78, 2000), " 2m ago ");
+    }
+
+    /// Lite must sit on the theme's background, not the terminal's — otherwise
+    /// the per-glyph backgrounds the chart renderers set show up as a fringe
+    /// against whatever the terminal happens to use.
+    ///
+    /// Under the `terminal` theme the opposite must hold: `p::bg()` is
+    /// `Color::Reset` there, and a theme whose entire contract is pinning no
+    /// colors must not start painting one now.
+    #[test]
+    fn the_background_is_filled_by_the_theme_and_reset_under_terminal() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // The active theme is process-global; take the same turn-taking lock
+        // the theme module's own mutating tests use.
+        let _guard = crate::ui::theme::exclusive_theme();
+
+        let fill = |theme: &str| {
+            crate::ui::theme::set_by_name(theme);
+            let mut term = Terminal::new(TestBackend::new(GRID_W, GRID_H)).unwrap();
+            term.draw(|f| {
+                let a = f.area();
+                fill_bg(f, a);
+            })
+            .unwrap();
+            let buf = term.backend().buffer().clone();
+            // A corner no other renderer writes to.
+            buf[(GRID_W - 1, GRID_H - 1)].bg
+        };
+
+        assert_eq!(fill("dark"), crate::ui::theme::by_name("dark").bg);
+        assert_ne!(
+            fill("dark"),
+            Color::Reset,
+            "the dark theme really does pin a background, so this test can fail"
+        );
+        assert_eq!(fill("terminal"), Color::Reset);
+
+        crate::ui::theme::set_by_name("dark");
     }
 
     /// The axis window must measure the history it is labelling, not restate

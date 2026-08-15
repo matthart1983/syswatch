@@ -24,10 +24,20 @@ pub struct SyswatchConfig {
     /// default; original solid look is unchanged.
     #[serde(default)]
     pub graph_fade: bool,
+    /// View the app opens in — `"full"`, `"lite"` or `"dense"`, matching
+    /// `crate::app::VIEW_MODE_NAMES`. Written whenever `V` cycles, so the
+    /// choice survives a restart the way the theme does. Unknown values fall
+    /// back to `"full"` rather than failing the load.
+    #[serde(default = "default_view")]
+    pub view: String,
     /// Tab the app opens on. Lowercase tab name, e.g. `"overview"` / `"cpu"`.
     pub default_tab: String,
     /// Sample interval in milliseconds. Clamped to `[100, 5000]` on load.
     pub tick_ms: u64,
+}
+
+fn default_view() -> String {
+    "full".into()
 }
 
 impl Default for SyswatchConfig {
@@ -36,6 +46,7 @@ impl Default for SyswatchConfig {
             theme: "dark".into(),
             graph_style: "bars".into(),
             graph_fade: false,
+            view: default_view(),
             default_tab: "overview".into(),
             tick_ms: 1000,
         }
@@ -73,6 +84,11 @@ impl SyswatchConfig {
         }
         if self.default_tab.is_empty() {
             self.default_tab = "overview".into();
+        }
+        // A hand-edited `view = "dense-ish"` must not silently start the app in
+        // a view that doesn't exist; fall back rather than fail the load.
+        if !crate::app::VIEW_MODE_NAMES.contains(&self.view.as_str()) {
+            self.view = default_view();
         }
     }
 
@@ -122,6 +138,7 @@ mod tests {
             theme: "".into(),
             graph_style: "".into(),
             graph_fade: false,
+            view: "full".into(),
             default_tab: "".into(),
             tick_ms: 1000,
         };
@@ -137,6 +154,7 @@ mod tests {
             theme: "dracula".into(),
             graph_style: "dots".into(),
             graph_fade: true,
+            view: "full".into(),
             default_tab: "cpu".into(),
             tick_ms: 500,
         };
@@ -155,6 +173,7 @@ mod tests {
             theme: "nord".into(),
             graph_style: "dots".into(),
             graph_fade: true,
+            view: "full".into(),
             default_tab: "memory".into(),
             tick_ms: 750,
         };

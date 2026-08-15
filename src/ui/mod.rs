@@ -1,4 +1,5 @@
 pub mod chrome;
+pub mod dense;
 pub mod graph;
 pub mod help;
 pub mod lite;

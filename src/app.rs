@@ -32,10 +32,12 @@ pub struct Options {
     pub replay: Option<Vec<Snapshot>>,
     /// Start in the Lite view (`--lite`). Opt-in only.
     pub lite: bool,
+    /// Start in the Dense view. Overrides `view` in config.toml for this run.
+    pub dense: bool,
 }
 
 /// Number of CPU-usage samples kept per process for the inline Procs sparkline.
-pub const PROC_CPU_SPARK_LEN: usize = 8;
+pub const PROC_CPU_SPARK_LEN: usize = 64;
 
 pub struct History {
     /// Aggregate CPU usage % (0..100), one sample per tick.
@@ -48,6 +50,20 @@ pub struct History {
     pub net_rate: Ring<f64>,
     /// Disk rd+wr bytes/sec aggregated.
     pub io_rate: Ring<f64>,
+    /// Net rx and tx kept apart, bytes/sec. The Dense view mirrors them around
+    /// a shared axis, which the summed `net_rate` cannot express: a backup and
+    /// a restore are the same total and opposite shapes.
+    pub net_rx: Ring<f64>,
+    pub net_tx: Ring<f64>,
+    /// Disk read and write kept apart, bytes/sec, for the same reason.
+    pub io_read: Ring<f64>,
+    pub io_write: Ring<f64>,
+    /// Per-logical-core usage % (0..100), one ring per core, grown to match
+    /// the core count the first time a snapshot reports it. Snapshots only
+    /// carry the current tick, so the Dense view's per-core sparklines need
+    /// their own history — a flat band at the current value would render every
+    /// core identically at exactly the moment you need to tell them apart.
+    pub per_core: Vec<Ring<f32>>,
     /// Aggregate GPU usage % (0..100), max across all detected devices per
     /// tick — captures the "any GPU is busy" signal regardless of which one.
     /// 0 when no GPU exposes live util (Linux NVIDIA without nvml, etc.).
@@ -70,8 +86,10 @@ pub struct History {
     /// to find processes whose load is sustained, not transient.
     pub proc_cpu_ewma: HashMap<u32, f32>,
     /// Per-pid short CPU-usage history (0..1, raw cpu_pct/100) for the
-    /// btop-style inline sparkline in the Procs tab (issue #10). Bounded to
-    /// `PROC_CPU_SPARK_LEN` samples each; pruned to live pids every tick.
+    /// btop-style inline sparkline in the Procs tab (issue #10) and the Dense
+    /// view's much wider `60s` column — at the old depth of 8 that column drew
+    /// four characters into a 28-column field. Bounded to `PROC_CPU_SPARK_LEN`
+    /// samples each; pruned to live pids every tick.
     pub proc_cpu_history: HashMap<u32, Ring<f32>>,
     /// Per-pid billed-power EWMA (macOS) — smooths the 2s sampler so
     /// the energy-hog insight doesn't fire on one busy window.
@@ -89,15 +107,36 @@ pub struct History {
     cap: usize,
 }
 
+/// Depth of the scalar metric rings, in samples.
+///
+/// **Deliberately decoupled from the session ring.** A `Snapshot` carries every
+/// process on the machine — on a busy box that is well over 100 KB apiece — so
+/// the session ring has to stay short. The scalar series are eight bytes a
+/// sample, so keeping thousands of them costs a couple of hundred KB in total.
+///
+/// Sizing these rings to the session ring's 120 left the Dense view's cpu graph
+/// permanently half-blank — it wanted more samples than the ring had ever kept,
+/// so no amount of waiting could fill it. This has to comfortably exceed the
+/// widest graph anyone will ever draw (see `dense::SAMPLES_PER_COL`).
+const SERIES_CAP: usize = 2048;
+
 impl History {
     pub(crate) fn new(cap: usize) -> Self {
+        // Replay sizes `cap` to the recording; never shrink the series below
+        // what the live view needs.
+        let scap = cap.max(SERIES_CAP);
         Self {
-            cpu: Ring::new(cap),
-            mem: Ring::new(cap),
-            swap: Ring::new(cap),
-            net_rate: Ring::new(cap),
-            io_rate: Ring::new(cap),
-            gpu_util: Ring::new(cap),
+            cpu: Ring::new(scap),
+            mem: Ring::new(scap),
+            swap: Ring::new(scap),
+            net_rate: Ring::new(scap),
+            io_rate: Ring::new(scap),
+            net_rx: Ring::new(scap),
+            net_tx: Ring::new(scap),
+            io_read: Ring::new(scap),
+            io_write: Ring::new(scap),
+            per_core: Vec::new(),
+            gpu_util: Ring::new(scap),
             gpu_util_by_name: HashMap::new(),
             gpu_vram_by_name: HashMap::new(),
             proc_cpu_ewma: HashMap::new(),
@@ -105,7 +144,9 @@ impl History {
             proc_power_ewma: HashMap::new(),
             proc_mem_track: HashMap::new(),
             session: Ring::new(cap),
-            cap,
+            // `cap` backs the lazily-created series (per-core, per-GPU), so it
+            // is the SERIES depth, not the session depth.
+            cap: scap,
         }
     }
 
@@ -120,10 +161,25 @@ impl History {
         };
         self.mem.push(m);
         self.swap.push(snap.mem.swap_used_bytes);
-        let net = snap.net.iter().map(|i| i.rx_rate + i.tx_rate).sum::<f64>();
-        self.net_rate.push(net);
+        let rx = snap.net.iter().map(|i| i.rx_rate).sum::<f64>();
+        let tx = snap.net.iter().map(|i| i.tx_rate).sum::<f64>();
+        self.net_rate.push(rx + tx);
+        self.net_rx.push(rx);
+        self.net_tx.push(tx);
         self.io_rate
             .push(snap.disk_io.read_rate + snap.disk_io.write_rate);
+        self.io_read.push(snap.disk_io.read_rate);
+        self.io_write.push(snap.disk_io.write_rate);
+        // Grow to the reported core count on first sight; a machine does not
+        // gain cores mid-run, but a first snapshot may arrive before the host
+        // probe has filled `cpu_cores`.
+        if self.per_core.len() < snap.cpu.per_core.len() {
+            self.per_core
+                .resize_with(snap.cpu.per_core.len(), || Ring::new(self.cap));
+        }
+        for (ring, &pct) in self.per_core.iter_mut().zip(snap.cpu.per_core.iter()) {
+            ring.push(pct);
+        }
         // Max util across all GPUs — handles laptops with iGPU+dGPU and the
         // common case of a single device alike. Defaults to 0 when no device
         // exposes util_pct.
@@ -393,18 +449,42 @@ pub enum LiveState {
     Replay,
 }
 
-/// Which of the two top-level views is rendering.
+/// Which of the top-level views is rendering.
 ///
 /// Lite is a deliberate counterpart to the full tabbed TUI: one screen at
-/// 80×24 answering "why is this machine hot, slow, or loud?" It is
-/// **opt-in only** — entered with `--lite` or toggled with `L`, never
-/// auto-selected by terminal size. Both views share the same collector and
-/// the same tick loop, so toggling is instant and no history is lost.
+/// 80×24 answering "why is this machine hot, slow, or loud?" Dense is the
+/// other direction — one screen at 130×44 showing *every* subsystem at once.
+/// All three are **opt-in only**, never auto-selected by terminal size, and
+/// all three share the same collector and tick loop, so cycling with `V` is
+/// instant and loses no history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
     #[default]
     Full,
     Lite,
+    /// The high-density six-box screen. See [`crate::ui::dense`].
+    Dense,
+}
+
+/// Config / CLI spellings, in cycle order. `V` walks this list.
+pub const VIEW_MODE_NAMES: &[&str] = &["full", "lite", "dense"];
+
+impl ViewMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            ViewMode::Full => "full",
+            ViewMode::Lite => "lite",
+            ViewMode::Dense => "dense",
+        }
+    }
+
+    pub fn next(self) -> ViewMode {
+        match self {
+            ViewMode::Full => ViewMode::Lite,
+            ViewMode::Lite => ViewMode::Dense,
+            ViewMode::Dense => ViewMode::Full,
+        }
+    }
 }
 
 /// Lite's own view state. Deliberately separate from the full TUI's
@@ -429,6 +509,9 @@ pub struct App {
     pub view_mode: ViewMode,
     /// Lite's selection, filter and alert state.
     pub lite: LiteState,
+    /// Dense's own selection. Separate from `lite` and from the full TUI's
+    /// `proc_sel` so cycling views never moves another view's cursor.
+    pub dense: crate::ui::dense::DenseState,
     /// Terminal area from the last frame. Lite's key handler needs to know
     /// how many rows are visible in order to clamp scrolling, and only the
     /// renderer sees the real `Rect`.
@@ -538,7 +621,7 @@ impl App {
 }
 
 impl App {
-    fn new(start: TabId, config: SyswatchConfig) -> Self {
+    pub(crate) fn new(start: TabId, config: SyswatchConfig) -> Self {
         // Theme is already applied globally in main(). Resolve graph_style
         // from the same config.
         let graph_style = match config.graph_style.to_lowercase().as_str() {
@@ -550,6 +633,7 @@ impl App {
             paused: false,
             view_mode: ViewMode::Full,
             lite: LiteState::default(),
+            dense: crate::ui::dense::DenseState::default(),
             last_area: Rect::new(0, 0, 0, 0),
             history: History::new(120),
             snap: None,
@@ -630,6 +714,8 @@ impl App {
                 self.lite.detail_open = false;
                 self.lite.filter_input = false;
             }
+            (KeyCode::Char('V'), _) | (KeyCode::Char('v'), _) => self.cycle_view(),
+            (KeyCode::Char(','), _) => self.open_settings(),
             (KeyCode::Char('?'), _) => self.help_active = true,
             (KeyCode::Char('p'), _) => self.paused = !self.paused,
             (KeyCode::Char('/'), _) => {
@@ -663,6 +749,99 @@ impl App {
         false
     }
 
+    /// Open the settings popup from a clean state. Reachable from every view
+    /// with `,`, the way netwatch does it — a menu that only exists in one of
+    /// three views is a menu users conclude is broken.
+    pub(crate) fn open_settings(&mut self) {
+        self.settings_active = true;
+        self.settings_cursor = 0;
+        self.settings_status = None;
+        self.settings_editing = false;
+    }
+
+    /// Dense's key surface. Like Lite it advertises every key it answers to in
+    /// its own box borders, so this list and those borders must stay in step.
+    fn handle_dense_key(&mut self, k: KeyEvent) -> bool {
+        // Resolve the cursor against the same order the table draws, so moving
+        // the selection and rendering it can never disagree.
+        let procs: Vec<u32> = self
+            .snap
+            .as_ref()
+            .map(|s| {
+                crate::ui::dense::sorted_procs(s, &self.history, &self.dense)
+                    .iter()
+                    .map(|p| p.pid)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let count = procs.len();
+        let cur = crate::ui::dense::selected_index_by_pid(
+            self.dense.selected_pid,
+            self.dense.selected,
+            &procs,
+        );
+        let visible =
+            crate::ui::dense::Layout::with_zoom(self.last_area, self.dense.zoom).visible_procs();
+        let goto = |app: &mut Self, i: usize| {
+            app.dense.selected = i;
+            app.dense.selected_pid = procs.get(i).copied();
+        };
+        match (k.code, k.modifiers) {
+            (KeyCode::Char('q'), _) => return true,
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
+            (KeyCode::Char('V'), _) | (KeyCode::Char('v'), _) => self.cycle_view(),
+            (KeyCode::Char(','), _) => self.open_settings(),
+            (KeyCode::Char('?'), _) => self.help_active = true,
+            (KeyCode::Char('p'), _) => self.paused = !self.paused,
+            // The bracketed `┤1├` every box carries in its border is an
+            // affordance; zoom is what it promises. Same key toggles back.
+            (KeyCode::Char(c @ '1'..='6'), _) => {
+                let id = c as u8 - b'0';
+                let l = crate::ui::dense::Layout::new(self.last_area);
+                if l.boxes().contains(&id) {
+                    self.dense.zoom = if self.dense.zoom == Some(id) {
+                        None
+                    } else {
+                        Some(id)
+                    };
+                }
+            }
+            (KeyCode::Esc, _) => self.dense.zoom = None,
+            (KeyCode::Char('t'), _) => {
+                let next = crate::ui::theme::cycle();
+                self.user_config.theme = next.into();
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                if count > 0 {
+                    goto(self, (cur + 1).min(count - 1));
+                }
+            }
+            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => goto(self, cur.saturating_sub(1)),
+            (KeyCode::Home, _) => goto(self, 0),
+            (KeyCode::End, _) => goto(self, count.saturating_sub(1)),
+            (KeyCode::PageDown, _) => {
+                if count > 0 {
+                    goto(self, (cur + visible).min(count - 1));
+                }
+            }
+            (KeyCode::PageUp, _) => goto(self, cur.saturating_sub(visible)),
+            _ => {}
+        }
+        false
+    }
+
+    /// Walk Full → Lite → Dense → Full. Every view shares the collector and
+    /// the tick loop, so this is a pure presentation change: no history is
+    /// dropped and no sampling restarts.
+    pub(crate) fn cycle_view(&mut self) {
+        self.view_mode = self.view_mode.next();
+        // Leaving Lite must not strand its transient UI states, or returning
+        // to it later reopens a detail block for a row that has since moved.
+        self.lite.detail_open = false;
+        self.lite.filter_input = false;
+        self.user_config.view = self.view_mode.name().into();
+    }
+
     /// Send every filterable tab's cursor back to the top. The filter is
     /// shared across tabs, so changing it invalidates each of their
     /// selections — not just the one currently on screen.
@@ -675,11 +854,21 @@ impl App {
         if k.kind != KeyEventKind::Press {
             return false;
         }
-        // Lite owns its whole key surface — it has six advertised keys, not
-        // twelve tabs — so it routes before any of the full TUI's handling.
-        // The `?` overlay is the one thing the two views share.
+        // A modal owns input regardless of which view is behind it. This has
+        // to sit ABOVE the view routing: with it below, `handle_lite_key` /
+        // `handle_dense_key` swallowed the settings popup's own keys, so the
+        // popup opened and then could not be driven or dismissed.
+        if self.settings_active {
+            return self.handle_settings_key(k);
+        }
+        // Lite owns the rest of its key surface — it has six advertised keys,
+        // not twelve tabs — so it routes before any of the full TUI's
+        // handling. The `?` overlay is the one thing the views share.
         if self.view_mode == ViewMode::Lite && !self.help_active {
             return self.handle_lite_key(k);
+        }
+        if self.view_mode == ViewMode::Dense && !self.help_active {
+            return self.handle_dense_key(k);
         }
         // Filter input mode — narrow keyboard scope so chars typed into
         // the search box don't also fire dashboard hotkeys.
@@ -733,20 +922,12 @@ impl App {
             }
             return false;
         }
-        // Settings popup absorbs all input while active. Returns true if
-        // the popup wants the parent app to ignore the key entirely.
-        if self.settings_active {
-            return self.handle_settings_key(k);
-        }
         match (k.code, k.modifiers) {
             (KeyCode::Char('q'), _) => return true,
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
             (KeyCode::Char('p'), _) => self.paused = !self.paused,
             (KeyCode::Char(','), _) => {
-                self.settings_active = true;
-                self.settings_cursor = 0;
-                self.settings_status = None;
-                self.settings_editing = false;
+                self.open_settings();
                 return false;
             }
             (KeyCode::Char('?'), _) => {
@@ -799,8 +980,10 @@ impl App {
                 let next = crate::ui::theme::cycle();
                 self.user_config.theme = next.into();
             }
-            // The other half of the Lite toggle; `handle_lite_key` owns Lite→Full.
+            // `L` is the direct jump to Lite, kept from before `V` existed.
+            // `V` walks Full → Lite → Dense.
             (KeyCode::Char('L'), _) => self.view_mode = ViewMode::Lite,
+            (KeyCode::Char('V'), _) | (KeyCode::Char('v'), _) => self.cycle_view(),
             (KeyCode::Char('1'), _) => self.active = TabId::Overview,
             (KeyCode::Char('2'), _) => self.active = TabId::Cpu,
             (KeyCode::Char('3'), _) => self.active = TabId::Memory,
@@ -1055,9 +1238,20 @@ pub fn run(opts: Options) -> Result<()> {
         start
     };
 
+    // Config first, flags second: `view = "dense"` in config.toml is the
+    // standing preference, and `--lite` / `--dense` override it for one run.
+    let configured = opts.config.view.clone();
     let mut app = App::new(start, opts.config);
+    app.view_mode = match configured.as_str() {
+        "lite" => ViewMode::Lite,
+        "dense" => ViewMode::Dense,
+        _ => ViewMode::Full,
+    };
     if opts.lite {
         app.view_mode = ViewMode::Lite;
+    }
+    if opts.dense {
+        app.view_mode = ViewMode::Dense;
     }
 
     // Populate History from the recording up front, then plant the
@@ -1175,10 +1369,21 @@ fn draw(f: &mut ratatui::Frame, app: &App, snap: &Snapshot) {
     if area.width < 20 || area.height < 6 {
         return;
     }
-    // Lite owns the whole frame — no header, no tab bar, no footer chrome.
-    // That is the point: one screen, and every row of it is content.
-    if app.view_mode == ViewMode::Lite {
-        crate::ui::lite::render(f, app, snap);
+    // Lite and Dense each own the whole frame — no header, no tab bar, no
+    // footer chrome. That is the point: one screen, and every row of it is
+    // content. Both carry their keybinds in their own borders instead.
+    if app.view_mode == ViewMode::Lite || app.view_mode == ViewMode::Dense {
+        if app.view_mode == ViewMode::Lite {
+            crate::ui::lite::render(f, app, snap);
+        } else {
+            crate::ui::dense::render(f, app, snap);
+        }
+        // Modals draw over these views too. Returning before this is what made
+        // `,` look dead in Lite and Dense: the popup's state flipped, and then
+        // nothing on screen changed.
+        if app.settings_active {
+            crate::ui::settings::render(f, app, area);
+        }
         if app.help_active {
             crate::ui::help::render(f, area);
         }
@@ -1853,6 +2058,101 @@ mod tests {
             !rows[14].trim().is_empty(),
             "no process rows rendered from a live sample"
         );
+    }
+
+    /// `V` walks all three views and comes back round. The config follows it,
+    /// so the choice survives a restart.
+    /// `,` reaches the settings menu from every view. netwatch offers it
+    /// everywhere; a menu that only opens in one of three views is a menu
+    /// users reasonably conclude is broken.
+    #[test]
+    fn comma_opens_the_menu_from_every_view() {
+        for view in [ViewMode::Full, ViewMode::Lite, ViewMode::Dense] {
+            let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+            app.view_mode = view;
+            press(&mut app, ',');
+            assert!(app.settings_active, "{view:?}: , did not open the menu");
+        }
+    }
+
+    /// The popup must own input while it is up. With the modal check below the
+    /// view routing, `handle_lite_key` / `handle_dense_key` swallowed the
+    /// popup's own keys — it opened, then could not be driven or dismissed.
+    #[test]
+    fn the_menu_owns_input_in_every_view() {
+        for view in [ViewMode::Full, ViewMode::Lite, ViewMode::Dense] {
+            let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+            app.view_mode = view;
+            press(&mut app, ',');
+            app.handle_key(KeyEvent::from(KeyCode::Down));
+            assert!(
+                app.settings_cursor > 0,
+                "{view:?}: the popup did not receive Down"
+            );
+            app.handle_key(KeyEvent::from(KeyCode::Esc));
+            assert!(!app.settings_active, "{view:?}: Esc did not close the menu");
+            // And the view behind it is untouched.
+            assert_eq!(app.view_mode, view);
+        }
+    }
+
+    /// `1`–`6` are drawn in every box border, so they have to do something.
+    #[test]
+    fn box_hotkeys_zoom_and_toggle_back() {
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        app.view_mode = ViewMode::Dense;
+        app.last_area = ratatui::layout::Rect::new(0, 0, 130, 44);
+        press(&mut app, '3');
+        assert_eq!(app.dense.zoom, Some(3));
+        press(&mut app, '3'); // same key toggles back out
+        assert_eq!(app.dense.zoom, None);
+        press(&mut app, '6');
+        assert_eq!(app.dense.zoom, Some(6));
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.dense.zoom, None, "Esc must restore the grid");
+    }
+
+    /// Compact has three boxes. `4`–`6` there must not blank the screen.
+    #[test]
+    fn compact_ignores_box_hotkeys_it_does_not_have() {
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        app.view_mode = ViewMode::Dense;
+        app.last_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        for c in ['4', '5', '6'] {
+            press(&mut app, c);
+            assert_eq!(app.dense.zoom, None, "{c} should be inert in compact");
+        }
+        press(&mut app, '3');
+        assert_eq!(app.dense.zoom, Some(3));
+    }
+
+    #[test]
+    fn v_cycles_full_lite_dense_and_wraps() {
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        assert_eq!(app.view_mode, ViewMode::Full);
+        app.cycle_view();
+        assert_eq!(app.view_mode, ViewMode::Lite);
+        assert_eq!(app.user_config.view, "lite");
+        app.cycle_view();
+        assert_eq!(app.view_mode, ViewMode::Dense);
+        assert_eq!(app.user_config.view, "dense");
+        app.cycle_view();
+        assert_eq!(app.view_mode, ViewMode::Full);
+        assert_eq!(app.user_config.view, "full");
+    }
+
+    /// Each view keeps its own cursor: cycling away and back must not drag
+    /// another view's selection with it.
+    #[test]
+    fn views_do_not_share_a_selection() {
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        app.lite.selected = 4;
+        app.dense.selected = 9;
+        app.cycle_view();
+        app.cycle_view();
+        app.cycle_view();
+        assert_eq!(app.lite.selected, 4);
+        assert_eq!(app.dense.selected, 9);
     }
 
     #[test]

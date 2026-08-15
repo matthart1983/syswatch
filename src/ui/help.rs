@@ -52,7 +52,7 @@ const GROUPS: &[Group] = &[
             },
             Row {
                 keys: ",",
-                label: "Open settings popup",
+                label: "Open the settings menu (works in every view)",
             },
             Row {
                 keys: "S",
@@ -63,8 +63,12 @@ const GROUPS: &[Group] = &[
                 label: "Toggle session recording → .swr file",
             },
             Row {
+                keys: "V",
+                label: "Cycle views: Full → Lite → Dense",
+            },
+            Row {
                 keys: "L",
-                label: "Toggle the Lite view (one screen, six keys)",
+                label: "Jump straight to the Lite view (one screen, six keys)",
             },
             Row {
                 keys: "?",
@@ -101,6 +105,33 @@ const GROUPS: &[Group] = &[
             Row {
                 keys: "L",
                 label: "Back to the full tabbed view",
+            },
+        ],
+    },
+    // Dense advertises its keys in its own box borders, so this group only
+    // lists the ones the borders have no room for.
+    Group {
+        title: "Dense view (V)",
+        rows: &[
+            Row {
+                keys: "1 – 6",
+                label: "Zoom that box to the full screen; same key or Esc to go back",
+            },
+            Row {
+                keys: "↑ ↓ / j k",
+                label: "Move the selection; the detail block follows it",
+            },
+            Row {
+                keys: "PgUp / PgDn",
+                label: "Move the selection a page at a time",
+            },
+            Row {
+                keys: "Home / End",
+                label: "First / last process",
+            },
+            Row {
+                keys: "t",
+                label: "Cycle the theme",
             },
         ],
     },

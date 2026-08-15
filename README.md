@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <em>Sibling to <a href="https://github.com/matthart1983/netwatch">NetWatch</a> (network) and <a href="https://github.com/matthart1983/diskwatch">DiskWatch</a> (disk). Same chrome. Same palette. Twelve tabs covering everything that runs on one box — or <a href="#lite-view">one screen</a> when that's the whole question.</em>
+  <em>Sibling to <a href="https://github.com/matthart1983/netwatch">NetWatch</a> (network) and <a href="https://github.com/matthart1983/diskwatch">DiskWatch</a> (disk). Same chrome. Same palette. Twelve tabs covering everything that runs on one box, <a href="#dense-view">one dense screen</a> when you want all of it at once, or <a href="#lite-view">one small screen</a> when that's the whole question.</em>
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <strong>New in v0.8.0:</strong> the <a href="#lite-view">Lite view</a> — <code>syswatch --lite</code>, or <code>L</code> at any time. One 80×24 screen answering <em>"why is this machine hot, slow, or loud?"</em> with six keys, for when twelve tabs is the wrong instrument: one box, an SSH session, a tmux split. The full view is one keypress away with the collector already warm.
+  <strong>New in v0.9.0:</strong> the <a href="#dense-view">Dense view</a> — <code>syswatch --dense</code>, or <code>V</code> to cycle. Every subsystem on one 130×44 screen: six boxes, zero chrome rows, braille graphs that encode magnitude as colour, and a mirrored network pair that turns traffic symmetry into a shape. Where <a href="#lite-view">Lite</a> answers <em>"why is this machine hot, slow, or loud?"</em>, Dense answers <em>"what is this machine doing, all of it, at once?"</em>
 </p>
 
 ---
@@ -76,6 +76,7 @@ syswatch --tick 500            # 2Hz
 syswatch --tab procs           # boot straight into a tab
 syswatch --replay session.swr  # scrub a recorded session
 syswatch --lite                # the one-screen Lite view
+syswatch --dense               # the high-density Dense view
 ```
 
 ### Keys
@@ -94,7 +95,8 @@ g                   →  Graph style (bars / dots)
 t                   →  Cycle theme (incl. "terminal" — uses your terminal's own palette)
 ,                   →  Settings (tick, theme, btop-style fade)
 S / R               →  Snapshot to disk / record session
-L                   →  Toggle the Lite view
+V                   →  Cycle views: Full → Lite → Dense
+L                   →  Jump straight to the Lite view
 ?                   →  Help
 q / Ctrl-C          →  Quit
 ```
@@ -138,6 +140,51 @@ swap, so a Mac doing what Macs normally do doesn't read as an emergency. It foll
 your theme and graph style like every other screen, and it is read-only, same
 as the rest of syswatch.
 
+### Dense view
+
+`syswatch --dense`, or `V` to cycle Full → Lite → Dense. Every subsystem on one
+130×44 screen. Where Lite is the smallest useful thing, Dense is the largest:
+six boxes tiling the terminal with **zero chrome rows** — no header, no tab bar,
+no status bar. Identity, uptime, aggregate, sort state, page range and every
+keybind live inside the box borders, so a heading costs no row.
+
+```text
+rows  0-11  cpu            full-height braille graph · axis · vitals
+rows 12-23  mem  │ net     composition + history │ mirrored down/up
+rows 24-31  cores │ disk   per-core grid │ read/write sparklines
+rows 32-43  procs          detail-in-place + process table
+```
+
+**The mirror means "two directions of one flow."** Only `net` earns one:
+download grows up from a shared axis, upload grows down, so traffic symmetry
+becomes a shape — a restore is a cliff above the line, a backup a cliff below
+it. CPU and memory have no opposing direction, so each gets one honest
+full-height graph rather than a manufactured partner. Temperature is a bounded
+scalar, not a flow, so it sits on the vitals row with a green→red meter.
+
+Colour carries magnitude rather than identity: every cell is coloured by its own
+height in the plot, so you see a spike's severity before you read the axis. That
+split is deliberate — throughput graphs ramp cool→bright because a saturated disk
+during a backup is *working*, and only bounded values where high genuinely is bad
+(temperature, memory pressure, disk saturation) get the green→amber→red
+vocabulary. Ramps are built from your theme, never hardcoded; on the 16-colour
+`terminal` theme they step through the palette you already have rather than
+synthesising colours you never chose.
+
+`1`–`6` zoom a box to the whole frame — the process table at forty rows, or just
+the network mirror — and `esc` restores the grid. Below 100×38 it falls back to a
+three-box compact arrangement rather than cramming.
+
+Every number is measured over the window you can actually see, so a printed peak
+is never one hiding in scrolled-off history. Graphs hold one sample per column
+and fill from the right in real time, same as Lite: at the 1 Hz default a
+120-column graph shows two minutes and takes two minutes to fill. The axis says
+what it is actually showing.
+
+It is the sibling of [`netwatch`](https://github.com/matthart1983/netwatch)'s
+Dense view — same primitives, same panel idiom, same `V` cycle — so muscle
+memory carries between them the way it already does for Lite.
+
 ## What's distinctive
 
 **Insights tab.** Heuristic anomaly detection over the rolling session — swap thrash, runaway processes, disk full, memory pressure, high load, zombie parties — surfaced as plain-English cards with a suggested tab. The Overview's bottom strip and the tab bar's `[+]` badge keep them in sight from anywhere.
@@ -156,7 +203,7 @@ as the rest of syswatch.
 
 ## Scope
 
-All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), and the btop-style fade rendering are all live.
+All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), the Dense view (`V` / `--dense`), and the btop-style fade rendering are all live.
 
 Lite's temp / fan / power vitals depend on platform sensors: Linux reads `/sys/class/hwmon`, `/sys/class/thermal` and RAPL; macOS needs IOKit/SMC access, so on Apple Silicon those three commonly render `--` while CPU, memory, disk and processes remain fully live.
 

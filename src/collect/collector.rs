@@ -607,15 +607,24 @@ fn arc_adjust(used: u64, available: u64, total: u64, arc_bytes: u64) -> (u64, u6
     (used - moved, (available + moved).min(total))
 }
 
-/// Parse the `size` (resident ARC size) field from /proc/spl/kstat/zfs/arcstats text.
-fn parse_arcstats_size(text: &str) -> Option<u64> {
+/// Parse `size` and `c_min` from /proc/spl/kstat/zfs/arcstats text.
+/// Returns (resident size, non-reclaimable floor).
+fn parse_arcstats(text: &str) -> Option<(u64, u64)> {
+    let mut size: Option<u64> = None;
+    let mut c_min: Option<u64> = None;
     for line in text.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.first() == Some(&"size") {
-            return parts.get(2).and_then(|v| v.parse::<u64>().ok());
+        let (Some(&name), Some(val_str)) = (parts.first(), parts.get(2)) else {
+            continue;
+        };
+        let val = val_str.parse::<u64>().ok().unwrap_or(0);
+        match name {
+            "size" => size = Some(val),
+            "c_min" => c_min = Some(val),
+            _ => {}
         }
     }
-    None
+    Some((size?, c_min.unwrap_or(0)))
 }
 
 /// Ticks between re-probes of the arcstats path.
@@ -640,7 +649,7 @@ fn read_arc_size() -> u64 {
     }
     std::fs::read_to_string(path)
         .ok()
-        .and_then(|s| parse_arcstats_size(&s))
+        .and_then(|s| parse_arcstats(&s).map(|(size, c_min)| size.saturating_sub(c_min)))
         .unwrap_or(0)
 }
 
@@ -853,7 +862,7 @@ Threads:\t17
     }
 
     #[test]
-    fn parse_arcstats_size_extracts_size_from_real_output() {
+    fn parse_arcstats_extracts_size_and_c_min_from_real_output() {
         let text = "\
 24 1 0x01 148 40256 5856356141 1344751450507729
 name                            type data
@@ -864,16 +873,16 @@ c                               4    66373946864
 c_min                           4    4217798400
 c_max                           4    133895806976
 size                            4    65967562640";
-        assert_eq!(parse_arcstats_size(text), Some(65967562640));
+        assert_eq!(parse_arcstats(text), Some((65967562640, 4217798400)));
     }
 
     #[test]
-    fn parse_arcstats_size_returns_none_when_size_absent() {
-        assert_eq!(parse_arcstats_size("name  type  data\nhits  4  100\n"), None);
+    fn parse_arcstats_returns_none_when_size_absent() {
+        assert_eq!(parse_arcstats("name  type  data\nhits  4  100\n"), None);
     }
 
     #[test]
-    fn parse_arcstats_size_returns_none_on_empty() {
-        assert_eq!(parse_arcstats_size(""), None);
+    fn parse_arcstats_returns_none_on_empty() {
+        assert_eq!(parse_arcstats(""), None);
     }
 }

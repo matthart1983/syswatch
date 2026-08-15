@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Instant, SystemTime};
 
 use sysinfo::{Disks, Networks, Pid, ProcessRefreshKind, RefreshKind, System, Users};
@@ -618,17 +618,27 @@ fn parse_arcstats_size(text: &str) -> Option<u64> {
     None
 }
 
-/// Cached at startup — ZFS modules don't load/unload at runtime.
-static HAS_ZFS: OnceLock<bool> = OnceLock::new();
+/// Ticks between re-probes of the arcstats path.
+/// ZFS can load on demand; probing once at startup risks non-detection on long lived processes
+static ZFS_REPROBE_INTERVAL: u32 = 30;
+static ZFS_REPROBE_TICKS: AtomicU32 = AtomicU32::new(1);
+static ZFS_FOUND: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "linux")]
 fn read_arc_size() -> u64 {
-    if !*HAS_ZFS.get_or_init(|| {
-        std::path::Path::new("/proc/spl/kstat/zfs/arcstats").exists()
-    }) {
+    let path = std::path::Path::new("/proc/spl/kstat/zfs/arcstats");
+    let was_one = ZFS_REPROBE_TICKS.fetch_sub(1, Ordering::Relaxed) == 1;
+    if was_one {
+        ZFS_REPROBE_TICKS.store(ZFS_REPROBE_INTERVAL, Ordering::Relaxed);
+        let found = path.exists();
+        ZFS_FOUND.store(found, Ordering::Relaxed);
+        if !found {
+            return 0;
+        }
+    } else if !ZFS_FOUND.load(Ordering::Relaxed) {
         return 0;
     }
-    std::fs::read_to_string("/proc/spl/kstat/zfs/arcstats")
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|s| parse_arcstats_size(&s))
         .unwrap_or(0)

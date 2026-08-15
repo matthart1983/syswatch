@@ -606,11 +606,11 @@ fn arc_adjust(used: u64, available: u64, arc_bytes: u64) -> (u64, u64) {
     (used.saturating_sub(arc_bytes), available + arc_bytes)
 }
 
-/// Parse the `c` (ARC size) field from /proc/spl/kstat/zfs/arcstats text.
-fn parse_arcstats_c(text: &str) -> Option<u64> {
+/// Parse the `size` (resident ARC size) field from /proc/spl/kstat/zfs/arcstats text.
+fn parse_arcstats_size(text: &str) -> Option<u64> {
     for line in text.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.first() == Some(&"c") {
+        if parts.first() == Some(&"size") {
             return parts.get(2).and_then(|v| v.parse::<u64>().ok());
         }
     }
@@ -629,7 +629,7 @@ fn read_arc_size() -> u64 {
     }
     std::fs::read_to_string("/proc/spl/kstat/zfs/arcstats")
         .ok()
-        .and_then(|s| parse_arcstats_c(&s))
+        .and_then(|s| parse_arcstats_size(&s))
         .unwrap_or(0)
 }
 
@@ -836,13 +836,13 @@ Threads:\t17
     }
 
     #[test]
-    fn arc_adjust_saturates_when_arc_exceeds_used() {
+    fn arc_adjust_clamps_when_arc_exceeds_used() {
         // ARC larger than used must not underflow — used clamps to 0.
         assert_eq!(arc_adjust(100, 50, 150), (0, 200));
     }
 
     #[test]
-    fn parse_arcstats_c_extracts_c_from_real_output() {
+    fn parse_arcstats_size_extracts_size_from_real_output() {
         let text = "\
 24 1 0x01 148 40256 5856356141 1344751450507729
 name                            type data
@@ -853,16 +853,16 @@ c                               4    66373946864
 c_min                           4    4217798400
 c_max                           4    133895806976
 size                            4    65967562640";
-        assert_eq!(parse_arcstats_c(text), Some(66373946864));
+        assert_eq!(parse_arcstats_size(text), Some(65967562640));
     }
 
     #[test]
-    fn parse_arcstats_c_returns_none_when_c_absent() {
-        assert_eq!(parse_arcstats_c("name  type  data\nhits  4  100\n"), None);
+    fn parse_arcstats_size_returns_none_when_size_absent() {
+        assert_eq!(parse_arcstats_size("name  type  data\nhits  4  100\n"), None);
     }
 
     #[test]
-    fn parse_arcstats_c_returns_none_on_empty() {
-        assert_eq!(parse_arcstats_c(""), None);
+    fn parse_arcstats_size_returns_none_on_empty() {
+        assert_eq!(parse_arcstats_size(""), None);
     }
 }

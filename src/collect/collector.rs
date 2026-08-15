@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Instant, SystemTime};
 
 use sysinfo::{Disks, Networks, Pid, ProcessRefreshKind, RefreshKind, System, Users};
@@ -277,8 +276,8 @@ impl Collector {
         // Subtract ZFS ARC from used (it's reclaimable cache, not committed).
         #[cfg(target_os = "linux")]
         {
-            let arc = read_arc_size();
-            (used, available) = arc_adjust(used, available, total, arc);
+            let arc = zfs::read_arc_size();
+            (used, available) = zfs::arc_adjust(used, available, total, arc);
         }
         MemTick {
             total_bytes: total,
@@ -602,60 +601,107 @@ fn collect_pressure() -> Option<PressureTick> {
     None
 }
 
-fn arc_adjust(used: u64, available: u64, total: u64, arc_bytes: u64) -> (u64, u64) {
-    let moved = arc_bytes.min(used);
-    (used - moved, (available + moved).min(total))
-}
-
-/// Parse `size` and `c_min` from /proc/spl/kstat/zfs/arcstats text.
-/// Returns (resident size, non-reclaimable floor).
-fn parse_arcstats(text: &str) -> Option<(u64, u64)> {
-    let mut size: Option<u64> = None;
-    let mut c_min: Option<u64> = None;
-    for line in text.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        let (Some(&name), Some(val_str)) = (parts.first(), parts.get(2)) else {
-            continue;
-        };
-        let val = val_str.parse::<u64>().ok().unwrap_or(0);
-        match name {
-            "size" => size = Some(val),
-            "c_min" => c_min = Some(val),
-            _ => {}
-        }
-    }
-    Some((size?, c_min.unwrap_or(0)))
-}
-
-/// Ticks between re-probes of the arcstats path.
-/// ZFS can load on demand; probing once at startup risks non-detection on long lived processes
-static ZFS_REPROBE_INTERVAL: u32 = 30;
-static ZFS_REPROBE_TICKS: AtomicU32 = AtomicU32::new(1);
-static ZFS_FOUND: AtomicBool = AtomicBool::new(false);
-
 #[cfg(target_os = "linux")]
-fn read_arc_size() -> u64 {
-    let path = std::path::Path::new("/proc/spl/kstat/zfs/arcstats");
-    let was_one = ZFS_REPROBE_TICKS.fetch_sub(1, Ordering::Relaxed) == 1;
-    if was_one {
-        ZFS_REPROBE_TICKS.store(ZFS_REPROBE_INTERVAL, Ordering::Relaxed);
-        let found = path.exists();
-        ZFS_FOUND.store(found, Ordering::Relaxed);
-        if !found {
+mod zfs {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    pub fn arc_adjust(used: u64, available: u64, total: u64, arc_bytes: u64) -> (u64, u64) {
+        let moved = arc_bytes.min(used);
+        (used - moved, (available + moved).min(total))
+    }
+
+    /// Parse `size` and `c_min` from /proc/spl/kstat/zfs/arcstats text.
+    /// Returns (resident size, non-reclaimable floor).
+    fn parse_arcstats(text: &str) -> Option<(u64, u64)> {
+        let mut size: Option<u64> = None;
+        let mut c_min: Option<u64> = None;
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            let (Some(&name), Some(val_str)) = (parts.first(), parts.get(2)) else {
+                continue;
+            };
+            let val = val_str.parse::<u64>().ok().unwrap_or(0);
+            match name {
+                "size" => size = Some(val),
+                "c_min" => c_min = Some(val),
+                _ => {}
+            }
+        }
+        Some((size?, c_min.unwrap_or(0)))
+    }
+
+    /// Ticks between re-probes of the arcstats path.
+    /// ZFS can load on demand; probing once at startup risks non-detection on long lived processes
+    static REPROBE_INTERVAL: u32 = 30;
+    static REPROBE_TICKS: AtomicU32 = AtomicU32::new(1);
+    static FOUND: AtomicBool = AtomicBool::new(false);
+
+    pub fn read_arc_size() -> u64 {
+        let path = std::path::Path::new("/proc/spl/kstat/zfs/arcstats");
+        let was_one = REPROBE_TICKS.fetch_sub(1, Ordering::Relaxed) == 1;
+        if was_one {
+            REPROBE_TICKS.store(REPROBE_INTERVAL, Ordering::Relaxed);
+            let found = path.exists();
+            FOUND.store(found, Ordering::Relaxed);
+            if !found {
+                return 0;
+            }
+        } else if !FOUND.load(Ordering::Relaxed) {
             return 0;
         }
-    } else if !ZFS_FOUND.load(Ordering::Relaxed) {
-        return 0;
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| parse_arcstats(&s).map(|(size, c_min)| size.saturating_sub(c_min)))
+            .unwrap_or(0)
     }
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| parse_arcstats(&s).map(|(size, c_min)| size.saturating_sub(c_min)))
-        .unwrap_or(0)
-}
 
-#[cfg(not(target_os = "linux"))]
-fn read_arc_size() -> u64 {
-    0
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn arc_adjust_no_arc_preserves_values() {
+            assert_eq!(arc_adjust(100, 50, 150, 0), (100, 50));
+        }
+
+        #[test]
+        fn arc_adjust_subtracts_from_used_adds_to_available() {
+            assert_eq!(arc_adjust(100, 50, 150, 30), (70, 80));
+        }
+
+        #[test]
+        fn arc_adjust_clamps_when_arc_exceeds_used() {
+            assert_eq!(arc_adjust(100, 50, 150, 150), (0, 150));
+        }
+
+        #[test]
+        fn parse_arcstats_extracts_size_and_c_min_from_real_output() {
+            let text = "\
+24 1 0x01 148 40256 5856356141 1344751450507729
+name                            type data
+hits                            4    2049659748
+iohits                          4    1195048
+misses                          4    4407338
+c                               4    66373946864
+c_min                           4    4217798400
+c_max                           4    133895806976
+size                            4    65967562640";
+            assert_eq!(parse_arcstats(text), Some((65967562640, 4217798400)));
+        }
+
+        #[test]
+        fn parse_arcstats_returns_none_when_size_absent() {
+            assert_eq!(
+                parse_arcstats("name  type  data\nhits  4  100\n"),
+                None
+            );
+        }
+
+        #[test]
+        fn parse_arcstats_returns_none_on_empty() {
+            assert_eq!(parse_arcstats(""), None);
+        }
+    }
 }
 
 /// macOS's own memory-pressure verdict, from
@@ -839,50 +885,5 @@ Threads:\t17
         assert!(threads.unwrap_or(0) >= 1);
         // Peak comes from rusage in proc_memory on macOS, not here.
         assert_eq!(peak, None);
-    }
-
-    // ── ZFS ARC adjustments ────────────────────────────────────────────
-
-    #[test]
-    fn arc_adjust_no_arc_preserves_values() {
-        // Zero ARC → no change to used or available.
-        assert_eq!(arc_adjust(100, 50, 150, 0), (100, 50));
-    }
-
-    #[test]
-    fn arc_adjust_subtracts_from_used_adds_to_available() {
-        // 30 bytes of ARC moved from used → available.
-        assert_eq!(arc_adjust(100, 50, 150, 30), (70, 80));
-    }
-
-    #[test]
-    fn arc_adjust_clamps_when_arc_exceeds_used() {
-        // ARC larger than used: used clamps to 0, available clamps to total.
-        assert_eq!(arc_adjust(100, 50, 150, 150), (0, 150));
-    }
-
-    #[test]
-    fn parse_arcstats_extracts_size_and_c_min_from_real_output() {
-        let text = "\
-24 1 0x01 148 40256 5856356141 1344751450507729
-name                            type data
-hits                            4    2049659748
-iohits                          4    1195048
-misses                          4    4407338
-c                               4    66373946864
-c_min                           4    4217798400
-c_max                           4    133895806976
-size                            4    65967562640";
-        assert_eq!(parse_arcstats(text), Some((65967562640, 4217798400)));
-    }
-
-    #[test]
-    fn parse_arcstats_returns_none_when_size_absent() {
-        assert_eq!(parse_arcstats("name  type  data\nhits  4  100\n"), None);
-    }
-
-    #[test]
-    fn parse_arcstats_returns_none_on_empty() {
-        assert_eq!(parse_arcstats(""), None);
     }
 }

@@ -13,15 +13,23 @@
 </p>
 
 <p align="center">
-  <em>Sibling to <a href="https://github.com/matthart1983/netwatch">NetWatch</a> (network) and <a href="https://github.com/matthart1983/diskwatch">DiskWatch</a> (disk). Same chrome. Same palette. Twelve tabs covering everything that runs on one box, <a href="#dense-view">one dense screen</a> when you want all of it at once, or <a href="#lite-view">one small screen</a> when that's the whole question.</em>
+  <em>Sibling to <a href="https://github.com/matthart1983/netwatch">NetWatch</a> (network) and <a href="https://github.com/matthart1983/diskwatch">DiskWatch</a> (disk). Same chrome. Same palette. <a href="#dense-view">One dense screen</a> with every subsystem on it, twelve tabs when you want to go deeper, or <a href="#lite-view">one small screen</a> when that's the whole question.</em>
 </p>
 
 <p align="center">
-  <img src="demo.gif" alt="SysWatch — Overview, CPU, Memory, GPU, Procs, Power, Timeline, Insights" width="800">
+  <img src="demo-dense.gif" alt="SysWatch Dense: six boxes on one 130×44 screen — a full-height CPU graph over a vitals row, memory composition beside a mirrored network pair, the per-core grid beside disk read/write, and processes sorted by CPU with detail in place; then the process table and the network mirror each zoomed to the full frame" width="900">
 </p>
 
 <p align="center">
-  <strong>New in v0.9.0:</strong> the <a href="#dense-view">Dense view</a> — <code>syswatch --dense</code>, or <code>V</code> to cycle. Every subsystem on one 130×44 screen: six boxes, zero chrome rows, braille graphs that encode magnitude as colour, and a mirrored network pair that turns traffic symmetry into a shape. Where <a href="#lite-view">Lite</a> answers <em>"why is this machine hot, slow, or loud?"</em>, Dense answers <em>"what is this machine doing, all of it, at once?"</em>
+  <strong><a href="#dense-view">Dense</a> — <code>syswatch --dense</code>, or <code>V</code> to cycle.</strong> Every subsystem at once on one 130×44 screen: six boxes, zero chrome rows, braille graphs that encode magnitude as colour, and a mirrored network pair that turns traffic symmetry into a shape. Where <a href="#lite-view">Lite</a> answers <em>"why is this machine hot, slow, or loud?"</em>, Dense answers <em>"what is this machine doing, all of it, at once?"</em>
+</p>
+
+<p align="center">
+  <img src="demo.gif" alt="SysWatch — a tour of eight of the twelve tabs: Overview, CPU, Memory, Procs, GPU, Power, Timeline, Insights" width="800">
+</p>
+
+<p align="center">
+  <strong>…and the tour — <code>syswatch</code>, no flags.</strong> Twelve tabs, one per subsystem, for when one screen isn't the whole answer: per-process memory that matches Activity Monitor, measured per-process bandwidth and energy, a session scrubber that rewinds every panel at once, and plain-English anomaly cards.
 </p>
 
 ---
@@ -71,12 +79,12 @@ shows which packages are current.
 ## Usage
 
 ```bash
-syswatch                       # default 1Hz tick
+syswatch --dense               # every subsystem on one screen
+syswatch                       # the twelve-tab tour, default 1Hz tick
+syswatch --lite                # the one-screen Lite view
 syswatch --tick 500            # 2Hz
 syswatch --tab procs           # boot straight into a tab
 syswatch --replay session.swr  # scrub a recorded session
-syswatch --lite                # the one-screen Lite view
-syswatch --dense               # the high-density Dense view
 ```
 
 ### Keys
@@ -100,6 +108,61 @@ L                   →  Jump straight to the Lite view
 ?                   →  Help
 q / Ctrl-C          →  Quit
 ```
+
+### Dense view
+
+`syswatch --dense`, or `V` to cycle Full → Lite → Dense. Every subsystem on one
+130×44 screen — the GIF at the top of this page. Where [Lite](#lite-view) is the
+smallest useful thing, Dense is the largest: six boxes tiling the terminal with
+**zero chrome rows** — no header, no tab bar, no status bar. Identity, uptime,
+aggregate, sort state, page range and every keybind live inside the box borders,
+so a heading costs no row.
+
+```text
+rows  0-11  cpu            full-height braille graph · axis · vitals
+rows 12-23  mem  │ net     composition + history │ mirrored down/up
+rows 24-31  cores │ disk   per-core grid │ read/write sparklines
+rows 32-43  procs          detail-in-place + process table
+```
+
+**The mirror means "two directions of one flow."** Only `net` earns one:
+download grows up from a shared axis, upload grows down, so traffic symmetry
+becomes a shape — a restore is a cliff above the line, a backup a cliff below
+it. CPU and memory have no opposing direction, so each gets one honest
+full-height graph rather than a manufactured partner. Temperature is a bounded
+scalar, not a flow, so it sits on the vitals row with a green→red meter.
+
+Colour carries magnitude rather than identity: every cell is coloured by its own
+height in the plot, so you see a spike's severity before you read the axis. That
+split is deliberate — throughput graphs ramp cool→bright because a saturated disk
+during a backup is *working*, and only bounded values where high genuinely is bad
+(temperature, memory pressure, disk saturation) get the green→amber→red
+vocabulary. Ramps are built from your theme, never hardcoded; on the 16-colour
+`terminal` theme they step through the palette you already have rather than
+synthesising colours you never chose.
+
+`1`–`6` zoom a box to the whole frame — the process table at forty rows, or just
+the network mirror — and `esc` restores the grid. Below 100×37 it falls back to a
+three-box compact arrangement rather than cramming.
+
+Every number is measured over the window you can actually see, so a printed peak
+is never one hiding in scrolled-off history. Graphs hold one sample per column
+and fill from the right in real time, same as Lite: at the 1 Hz default a
+120-column graph shows two minutes and takes two minutes to fill. The axis says
+what it is actually showing.
+
+That GIF was recorded with `vhs demo-dense.tape` at exactly 130×44 — the size
+the grid was drawn at, so it shows the band heights the design intends rather than
+whatever a taller or narrower terminal stretches them into — under three real
+background loads: `yes` for the cores, rate-limited downloads for the net
+mirror, and the file they land in for the disk trace. `--tick 250` for the same
+reason as Lite: at 4 Hz the graphs fill inside a GIF instead of spending two
+minutes empty, and nothing is fast-forwarded to get there. What the axes read
+is the history they hold.
+
+It is the sibling of [`netwatch`](https://github.com/matthart1983/netwatch)'s
+Dense view — same primitives, same panel idiom, same `V` cycle — so muscle
+memory carries between them the way it already does for Lite.
 
 ### Lite view
 
@@ -139,64 +202,6 @@ pressure comes from the kernel's own verdict where there is one (PSI on Linux,
 swap, so a Mac doing what Macs normally do doesn't read as an emergency. It follows
 your theme and graph style like every other screen, and it is read-only, same
 as the rest of syswatch.
-
-### Dense view
-
-`syswatch --dense`, or `V` to cycle Full → Lite → Dense. Every subsystem on one
-130×44 screen. Where Lite is the smallest useful thing, Dense is the largest:
-six boxes tiling the terminal with **zero chrome rows** — no header, no tab bar,
-no status bar. Identity, uptime, aggregate, sort state, page range and every
-keybind live inside the box borders, so a heading costs no row.
-
-<p align="center">
-  <img src="demo-dense.gif" alt="SysWatch Dense: six boxes on one 130×44 screen — a full-height CPU graph over a vitals row, memory composition beside a mirrored network pair, the per-core grid beside disk read/write, and processes sorted by CPU with detail in place; then the process table and the network mirror each zoomed to the full frame" width="900">
-</p>
-
-```text
-rows  0-11  cpu            full-height braille graph · axis · vitals
-rows 12-23  mem  │ net     composition + history │ mirrored down/up
-rows 24-31  cores │ disk   per-core grid │ read/write sparklines
-rows 32-43  procs          detail-in-place + process table
-```
-
-**The mirror means "two directions of one flow."** Only `net` earns one:
-download grows up from a shared axis, upload grows down, so traffic symmetry
-becomes a shape — a restore is a cliff above the line, a backup a cliff below
-it. CPU and memory have no opposing direction, so each gets one honest
-full-height graph rather than a manufactured partner. Temperature is a bounded
-scalar, not a flow, so it sits on the vitals row with a green→red meter.
-
-Colour carries magnitude rather than identity: every cell is coloured by its own
-height in the plot, so you see a spike's severity before you read the axis. That
-split is deliberate — throughput graphs ramp cool→bright because a saturated disk
-during a backup is *working*, and only bounded values where high genuinely is bad
-(temperature, memory pressure, disk saturation) get the green→amber→red
-vocabulary. Ramps are built from your theme, never hardcoded; on the 16-colour
-`terminal` theme they step through the palette you already have rather than
-synthesising colours you never chose.
-
-`1`–`6` zoom a box to the whole frame — the process table at forty rows, or just
-the network mirror — and `esc` restores the grid. Below 100×37 it falls back to a
-three-box compact arrangement rather than cramming.
-
-Every number is measured over the window you can actually see, so a printed peak
-is never one hiding in scrolled-off history. Graphs hold one sample per column
-and fill from the right in real time, same as Lite: at the 1 Hz default a
-120-column graph shows two minutes and takes two minutes to fill. The axis says
-what it is actually showing.
-
-Recorded with `vhs demo-dense.tape` at exactly 130×44 — the size the grid was
-drawn at, so the GIF shows the band heights the design intends rather than
-whatever a taller or narrower terminal stretches them into — under three real
-background loads: `yes` for the cores, rate-limited downloads for the net
-mirror, and the file they land in for the disk trace. `--tick 250` for the same
-reason as Lite: at 4 Hz the graphs fill inside a GIF instead of spending two
-minutes empty, and nothing is fast-forwarded to get there. What the axes read
-is the history they hold.
-
-It is the sibling of [`netwatch`](https://github.com/matthart1983/netwatch)'s
-Dense view — same primitives, same panel idiom, same `V` cycle — so muscle
-memory carries between them the way it already does for Lite.
 
 ## What's distinctive
 

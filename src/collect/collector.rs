@@ -278,7 +278,7 @@ impl Collector {
         #[cfg(target_os = "linux")]
         {
             let arc = read_arc_size();
-            (used, available) = arc_adjust(used, available, arc);
+            (used, available) = arc_adjust(used, available, total, arc);
         }
         MemTick {
             total_bytes: total,
@@ -602,8 +602,9 @@ fn collect_pressure() -> Option<PressureTick> {
     None
 }
 
-fn arc_adjust(used: u64, available: u64, arc_bytes: u64) -> (u64, u64) {
-    (used.saturating_sub(arc_bytes), available + arc_bytes)
+fn arc_adjust(used: u64, available: u64, total: u64, arc_bytes: u64) -> (u64, u64) {
+    let moved = arc_bytes.min(used);
+    (used - moved, (available + moved).min(total))
 }
 
 /// Parse the `size` (resident ARC size) field from /proc/spl/kstat/zfs/arcstats text.
@@ -826,19 +827,19 @@ Threads:\t17
     #[test]
     fn arc_adjust_no_arc_preserves_values() {
         // Zero ARC → no change to used or available.
-        assert_eq!(arc_adjust(100, 50, 0), (100, 50));
+        assert_eq!(arc_adjust(100, 50, 150, 0), (100, 50));
     }
 
     #[test]
     fn arc_adjust_subtracts_from_used_adds_to_available() {
         // 30 bytes of ARC moved from used → available.
-        assert_eq!(arc_adjust(100, 50, 30), (70, 80));
+        assert_eq!(arc_adjust(100, 50, 150, 30), (70, 80));
     }
 
     #[test]
     fn arc_adjust_clamps_when_arc_exceeds_used() {
-        // ARC larger than used must not underflow — used clamps to 0.
-        assert_eq!(arc_adjust(100, 50, 150), (0, 200));
+        // ARC larger than used: used clamps to 0, available clamps to total.
+        assert_eq!(arc_adjust(100, 50, 150, 150), (0, 150));
     }
 
     #[test]

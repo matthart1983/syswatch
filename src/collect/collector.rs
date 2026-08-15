@@ -691,10 +691,7 @@ size                            4    65967562640";
 
         #[test]
         fn parse_arcstats_returns_none_when_size_absent() {
-            assert_eq!(
-                parse_arcstats("name  type  data\nhits  4  100\n"),
-                None
-            );
+            assert_eq!(parse_arcstats("name  type  data\nhits  4  100\n"), None);
         }
 
         #[test]

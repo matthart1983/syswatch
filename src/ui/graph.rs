@@ -86,11 +86,15 @@ const BLOCK_GLYPHS: [char; 8] = [
 // Bit position in a braille cell mask for each (sub_col, sub_row).
 // Braille pattern dots numbered 1–8 map to bits 0–7; the 4th row uses dots
 // 7 and 8 (bits 6 and 7), which is why it's not a straight `row + col*4`.
-const BRAILLE_BIT: [[u8; 4]; 2] = [
+// Public because the Dense view's `paint::area_graph` addresses the two
+// sub-columns independently (two samples per cell) rather than filling both as
+// `render_dots` does. Same bit table, different trade: horizontal samples
+// instead of a solid area.
+pub const BRAILLE_BIT: [[u8; 4]; 2] = [
     [0, 1, 2, 6], // sub_col 0: rows 0..=3 → dots 1, 2, 3, 7
     [3, 4, 5, 7], // sub_col 1: rows 0..=3 → dots 4, 5, 6, 8
 ];
-const BRAILLE_BASE: u32 = 0x2800;
+pub const BRAILLE_BASE: u32 = 0x2800;
 
 /// Render `samples` (each clamped to `0..=1`) into `area` using `style`.
 pub fn render(
@@ -262,7 +266,7 @@ pub fn fade_color(base: Color, bg: Color, alpha: f32) -> Color {
 /// color passes through untouched. `bg` is also `Reset` under that theme, so
 /// the real background is unknown; fading toward an assumed black would be
 /// wrong on a light terminal regardless.
-fn fade_color_inner(base: Color, bg: Color, alpha: f32, defer_to_terminal: bool) -> Color {
+pub fn fade_color_inner(base: Color, bg: Color, alpha: f32, defer_to_terminal: bool) -> Color {
     if defer_to_terminal {
         return base;
     }

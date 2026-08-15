@@ -34,6 +34,12 @@ struct Cli {
     #[arg(long)]
     lite: bool,
 
+    /// Start in the Dense view: every subsystem on one 130×44 screen, six
+    /// boxes and zero chrome rows. Cycle views with `V` at any time — like
+    /// Lite it is never selected automatically by terminal size.
+    #[arg(long)]
+    dense: bool,
+
     /// Replay a previously-recorded session (.swr file, written by
     /// pressing `R` during a live run). No live collection happens —
     /// arrow keys / Home / End scrub through the recorded ticks.
@@ -86,5 +92,6 @@ fn main() -> Result<()> {
         config: cfg,
         replay,
         lite: cli.lite,
+        dense: cli.dense,
     })
 }

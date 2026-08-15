@@ -148,6 +148,10 @@ six boxes tiling the terminal with **zero chrome rows** — no header, no tab ba
 no status bar. Identity, uptime, aggregate, sort state, page range and every
 keybind live inside the box borders, so a heading costs no row.
 
+<p align="center">
+  <img src="demo-dense.gif" alt="SysWatch Dense: six boxes on one 130×44 screen — a full-height CPU graph over a vitals row, memory composition beside a mirrored network pair, the per-core grid beside disk read/write, and processes sorted by CPU with detail in place; then the process table and the network mirror each zoomed to the full frame" width="900">
+</p>
+
 ```text
 rows  0-11  cpu            full-height braille graph · axis · vitals
 rows 12-23  mem  │ net     composition + history │ mirrored down/up
@@ -172,7 +176,7 @@ vocabulary. Ramps are built from your theme, never hardcoded; on the 16-colour
 synthesising colours you never chose.
 
 `1`–`6` zoom a box to the whole frame — the process table at forty rows, or just
-the network mirror — and `esc` restores the grid. Below 100×38 it falls back to a
+the network mirror — and `esc` restores the grid. Below 100×37 it falls back to a
 three-box compact arrangement rather than cramming.
 
 Every number is measured over the window you can actually see, so a printed peak
@@ -180,6 +184,15 @@ is never one hiding in scrolled-off history. Graphs hold one sample per column
 and fill from the right in real time, same as Lite: at the 1 Hz default a
 120-column graph shows two minutes and takes two minutes to fill. The axis says
 what it is actually showing.
+
+Recorded with `vhs demo-dense.tape` at exactly 130×44 — the size the grid was
+drawn at, so the GIF shows the band heights the design intends rather than
+whatever a taller or narrower terminal stretches them into — under three real
+background loads: `yes` for the cores, rate-limited downloads for the net
+mirror, and the file they land in for the disk trace. `--tick 250` for the same
+reason as Lite: at 4 Hz the graphs fill inside a GIF instead of spending two
+minutes empty, and nothing is fast-forwarded to get there. What the axes read
+is the history they hold.
 
 It is the sibling of [`netwatch`](https://github.com/matthart1983/netwatch)'s
 Dense view — same primitives, same panel idiom, same `V` cycle — so muscle

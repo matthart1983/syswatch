@@ -271,14 +271,14 @@ impl Collector {
 
     fn collect_mem(&self) -> MemTick {
         let total = self.sys.total_memory();
-        let mut used = self.sys.used_memory();
-        let mut available = self.sys.available_memory();
+        let used = self.sys.used_memory();
+        let available = self.sys.available_memory();
         // Subtract ZFS ARC from used (it's reclaimable cache, not committed).
         #[cfg(target_os = "linux")]
-        {
+        let (used, available) = {
             let arc = zfs::read_arc_size();
-            (used, available) = zfs::arc_adjust(used, available, total, arc);
-        }
+            zfs::arc_adjust(used, available, total, arc)
+        };
         MemTick {
             total_bytes: total,
             used_bytes: used,

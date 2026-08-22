@@ -270,10 +270,19 @@ impl Collector {
     }
 
     fn collect_mem(&self) -> MemTick {
+        let total = self.sys.total_memory();
+        let used = self.sys.used_memory();
+        let available = self.sys.available_memory();
+        // Subtract ZFS ARC from used (it's reclaimable cache, not committed).
+        #[cfg(target_os = "linux")]
+        let (used, available) = {
+            let arc = zfs::read_arc_size();
+            zfs::arc_adjust(used, available, total, arc)
+        };
         MemTick {
-            total_bytes: self.sys.total_memory(),
-            used_bytes: self.sys.used_memory(),
-            available_bytes: self.sys.available_memory(),
+            total_bytes: total,
+            used_bytes: used,
+            available_bytes: available,
             swap_total_bytes: self.sys.total_swap(),
             swap_used_bytes: self.sys.used_swap(),
             pressure_level: mem_pressure_level(),
@@ -590,6 +599,123 @@ fn collect_pressure() -> Option<PressureTick> {
 #[cfg(not(target_os = "linux"))]
 fn collect_pressure() -> Option<PressureTick> {
     None
+}
+
+#[cfg(target_os = "linux")]
+mod zfs {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    pub fn arc_adjust(used: u64, available: u64, total: u64, arc_bytes: u64) -> (u64, u64) {
+        let moved = arc_bytes.min(used);
+        (used - moved, (available + moved).min(total))
+    }
+
+    /// Parse `size` and `c_min` from /proc/spl/kstat/zfs/arcstats text.
+    /// Returns (resident size, non-reclaimable floor).
+    fn parse_arcstats(text: &str) -> Option<(u64, u64)> {
+        let mut size: Option<u64> = None;
+        let mut c_min: Option<u64> = None;
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            let (Some(&name), Some(val_str)) = (parts.first(), parts.get(2)) else {
+                continue;
+            };
+            let Ok(val) = val_str.parse::<u64>() else {
+                continue;
+            };
+            match name {
+                "size" => size = Some(val),
+                "c_min" => c_min = Some(val),
+                _ => {}
+            }
+        }
+        Some((size?, c_min.unwrap_or(0)))
+    }
+
+    /// Re-probes of the arcstats path, counted in *ticks* rather than
+    /// seconds: `tick_ms` is user-settable over 100..=5000, so this is a
+    /// re-probe every 3s at the fastest rate and every 150s at the slowest.
+    /// Probing once at startup would be cheaper and wrong — ZFS loads on
+    /// demand, so a module inserted after launch would never be noticed.
+    const REPROBE_INTERVAL: u32 = 30;
+    static REPROBE_TICKS: AtomicU32 = AtomicU32::new(1);
+    static FOUND: AtomicBool = AtomicBool::new(false);
+
+    pub fn read_arc_size() -> u64 {
+        // Between probes a host without ZFS pays one relaxed load and a
+        // branch — no syscall at all.
+        let due = REPROBE_TICKS.fetch_sub(1, Ordering::Relaxed) == 1;
+        if due {
+            REPROBE_TICKS.store(REPROBE_INTERVAL, Ordering::Relaxed);
+        } else if !FOUND.load(Ordering::Relaxed) {
+            return 0;
+        }
+        // The read is the probe. A missing file and an unreadable one are
+        // the same answer here, so a preceding `exists()` would buy a
+        // second syscall and no extra information.
+        let Ok(text) = std::fs::read_to_string("/proc/spl/kstat/zfs/arcstats") else {
+            FOUND.store(false, Ordering::Relaxed);
+            return 0;
+        };
+        FOUND.store(true, Ordering::Relaxed);
+        parse_arcstats(&text)
+            .map(|(size, c_min)| size.saturating_sub(c_min))
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn arc_adjust_no_arc_preserves_values() {
+            assert_eq!(arc_adjust(100, 50, 150, 0), (100, 50));
+        }
+
+        #[test]
+        fn arc_adjust_subtracts_from_used_adds_to_available() {
+            assert_eq!(arc_adjust(100, 50, 150, 30), (70, 80));
+        }
+
+        #[test]
+        fn arc_adjust_clamps_when_arc_exceeds_used() {
+            assert_eq!(arc_adjust(100, 50, 150, 150), (0, 150));
+        }
+
+        #[test]
+        fn parse_arcstats_extracts_size_and_c_min_from_real_output() {
+            let text = "\
+24 1 0x01 148 40256 5856356141 1344751450507729
+name                            type data
+hits                            4    2049659748
+iohits                          4    1195048
+misses                          4    4407338
+c                               4    66373946864
+c_min                           4    4217798400
+c_max                           4    133895806976
+size                            4    65967562640";
+            assert_eq!(parse_arcstats(text), Some((65967562640, 4217798400)));
+        }
+
+        #[test]
+        fn parse_arcstats_returns_none_when_size_absent() {
+            assert_eq!(parse_arcstats("name  type  data\nhits  4  100\n"), None);
+        }
+
+        #[test]
+        fn parse_arcstats_skips_rows_whose_value_is_not_a_number() {
+            // The header row's third column is the literal word `data`, and a
+            // c_min we can't read means no floor rather than a floor of zero
+            // bytes read as a number.
+            let text = "name  type  data\nsize  4  4096\nc_min  4  not_a_number\n";
+            assert_eq!(parse_arcstats(text), Some((4096, 0)));
+        }
+
+        #[test]
+        fn parse_arcstats_returns_none_on_empty() {
+            assert_eq!(parse_arcstats(""), None);
+        }
+    }
 }
 
 /// macOS's own memory-pressure verdict, from

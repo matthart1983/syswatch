@@ -164,7 +164,7 @@ Lite's temp / fan / power vitals depend on platform sensors: Linux reads `/sys/c
 
 **Behind cargo features** — NVIDIA live GPU stats (`gpu-nvidia`, `nvml-wrapper`).
 
-On Linux hosts with ZFS enabled, ZFS ARC is reclassified as cached memory instead of counting as used memory.
+**ZFS.** On Linux hosts running ZFS, the ARC is counted as available memory rather than used. It is a filesystem cache that gives pages back under pressure, so leaving it in `used` reads as permanent memory pressure on a machine that has none.
 
 ## Architecture
 

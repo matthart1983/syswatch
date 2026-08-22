@@ -620,7 +620,9 @@ mod zfs {
             let (Some(&name), Some(val_str)) = (parts.first(), parts.get(2)) else {
                 continue;
             };
-            let val = val_str.parse::<u64>().ok().unwrap_or(0);
+            let Ok(val) = val_str.parse::<u64>() else {
+                continue;
+            };
             match name {
                 "size" => size = Some(val),
                 "c_min" => c_min = Some(val),
@@ -630,28 +632,34 @@ mod zfs {
         Some((size?, c_min.unwrap_or(0)))
     }
 
-    /// Ticks between re-probes of the arcstats path.
-    /// ZFS can load on demand; probing once at startup risks non-detection on long lived processes
-    static REPROBE_INTERVAL: u32 = 30;
+    /// Re-probes of the arcstats path, counted in *ticks* rather than
+    /// seconds: `tick_ms` is user-settable over 100..=5000, so this is a
+    /// re-probe every 3s at the fastest rate and every 150s at the slowest.
+    /// Probing once at startup would be cheaper and wrong — ZFS loads on
+    /// demand, so a module inserted after launch would never be noticed.
+    const REPROBE_INTERVAL: u32 = 30;
     static REPROBE_TICKS: AtomicU32 = AtomicU32::new(1);
     static FOUND: AtomicBool = AtomicBool::new(false);
 
     pub fn read_arc_size() -> u64 {
-        let path = std::path::Path::new("/proc/spl/kstat/zfs/arcstats");
-        let was_one = REPROBE_TICKS.fetch_sub(1, Ordering::Relaxed) == 1;
-        if was_one {
+        // Between probes a host without ZFS pays one relaxed load and a
+        // branch — no syscall at all.
+        let due = REPROBE_TICKS.fetch_sub(1, Ordering::Relaxed) == 1;
+        if due {
             REPROBE_TICKS.store(REPROBE_INTERVAL, Ordering::Relaxed);
-            let found = path.exists();
-            FOUND.store(found, Ordering::Relaxed);
-            if !found {
-                return 0;
-            }
         } else if !FOUND.load(Ordering::Relaxed) {
             return 0;
         }
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| parse_arcstats(&s).map(|(size, c_min)| size.saturating_sub(c_min)))
+        // The read is the probe. A missing file and an unreadable one are
+        // the same answer here, so a preceding `exists()` would buy a
+        // second syscall and no extra information.
+        let Ok(text) = std::fs::read_to_string("/proc/spl/kstat/zfs/arcstats") else {
+            FOUND.store(false, Ordering::Relaxed);
+            return 0;
+        };
+        FOUND.store(true, Ordering::Relaxed);
+        parse_arcstats(&text)
+            .map(|(size, c_min)| size.saturating_sub(c_min))
             .unwrap_or(0)
     }
 
@@ -692,6 +700,15 @@ size                            4    65967562640";
         #[test]
         fn parse_arcstats_returns_none_when_size_absent() {
             assert_eq!(parse_arcstats("name  type  data\nhits  4  100\n"), None);
+        }
+
+        #[test]
+        fn parse_arcstats_skips_rows_whose_value_is_not_a_number() {
+            // The header row's third column is the literal word `data`, and a
+            // c_min we can't read means no floor rather than a floor of zero
+            // bytes read as a number.
+            let text = "name  type  data\nsize  4  4096\nc_min  4  not_a_number\n";
+            assert_eq!(parse_arcstats(text), Some((4096, 0)));
         }
 
         #[test]

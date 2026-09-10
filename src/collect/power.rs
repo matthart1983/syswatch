@@ -79,32 +79,26 @@ impl PowerCollector {
 
 #[cfg(target_os = "macos")]
 fn sample_inner() -> PowerTick {
-    use std::process::Command;
+    use crate::collect::command::{run_with_timeout, PERIODIC_TIMEOUT};
 
     let mut tick = PowerTick::default();
 
     // Battery from ioreg AppleSmartBattery. We no longer derive
     // system_power_w from V·A here — the shared macOS sampler returns
     // the real per-rail total via IOReport in `PowerCollector::sample`.
-    if let Ok(out) = Command::new("ioreg")
-        .args(["-rn", "AppleSmartBattery"])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&out.stdout);
+    if let Some(text) = run_with_timeout("ioreg", &["-rn", "AppleSmartBattery"], PERIODIC_TIMEOUT) {
         tick.battery = parse_macos_ioreg_battery(&text);
     }
 
     // Power source from pmset -g batt's first line: "Now drawing from 'X Power'".
-    if let Ok(out) = Command::new("pmset").args(["-g", "batt"]).output() {
-        let text = String::from_utf8_lossy(&out.stdout);
+    if let Some(text) = run_with_timeout("pmset", &["-g", "batt"], PERIODIC_TIMEOUT) {
         tick.source = parse_macos_pmset_source(&text);
     }
 
     // Thermal throttle from pmset -g therm. If the line "CPU_Speed_Limit = N"
     // is present we use N; if pmset only prints "no warning level recorded"
     // we know the system is fine → 100.
-    if let Ok(out) = Command::new("pmset").args(["-g", "therm"]).output() {
-        let text = String::from_utf8_lossy(&out.stdout);
+    if let Some(text) = run_with_timeout("pmset", &["-g", "therm"], PERIODIC_TIMEOUT) {
         tick.thermal_throttle_pct = Some(parse_macos_pmset_throttle(&text));
     }
 

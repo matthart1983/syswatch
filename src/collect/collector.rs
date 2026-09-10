@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Instant, SystemTime};
 
-use sysinfo::{Disks, Networks, Pid, ProcessRefreshKind, RefreshKind, System, Users};
+use sysinfo::{Disks, Networks, Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind, Users};
 
 use super::gpu::GpuDiscovery;
 #[cfg(target_os = "macos")]
@@ -34,6 +34,14 @@ pub struct Collector {
     last_disk_write: u64,
     last_iface: HashMap<String, (u64, u64)>, // name -> (rx, tx)
     last_proc_io: HashMap<u32, (u64, u64)>,  // pid -> cumulative (read, written) bytes
+    /// Base per-process rows from the last actual refresh. `collect_procs`
+    /// re-reads `/proc/<pid>/status` per process (for thread count and peak
+    /// RSS) and clones every name/cmdline string, on top of walking every
+    /// entry in `self.sys.processes()` -- real cost, worth skipping on the
+    /// ticks where sysinfo's own cached process data hasn't changed at
+    /// all. Cloned and re-merged with the per-tick bw/gpu/mem detail on
+    /// every sample; only rebuilt when `procs_stale`.
+    cached_procs: Vec<ProcTick>,
     gpu: GpuDiscovery,
     power: PowerCollector,
     proc_bw: ProcessBandwidthCollector,
@@ -93,6 +101,7 @@ impl Collector {
             last_disk_write: 0,
             last_iface: HashMap::new(),
             last_proc_io: HashMap::new(),
+            cached_procs: Vec::new(),
             gpu: GpuDiscovery::new(),
             power: PowerCollector::new(),
             proc_bw: ProcessBandwidthCollector::new(),
@@ -125,16 +134,32 @@ impl Collector {
         // full process scan every frame.
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
-        const PROCS_REFRESH: std::time::Duration = std::time::Duration::from_millis(1500);
-        let procs_stale = self
-            .last_procs_refresh
+        // 1.5s -> 3s: halves the amortized cost of the heaviest single
+        // stage in the collector (a full /proc scan for cpu/mem/disk_usage
+        // over every process) for a staleness bound most `top`-family
+        // tools already accept.
+        const PROCS_REFRESH: std::time::Duration = std::time::Duration::from_secs(3);
+        let prior_refresh = self.last_procs_refresh;
+        let procs_stale = prior_refresh
             .map(|t| now.duration_since(t) >= PROCS_REFRESH)
             .unwrap_or(true);
         if procs_stale {
+            // Only the fields `collect_procs` reads, and at the same
+            // update cadence `everything()` used for them: user and cmd
+            // are `OnlyIfNotSet` because a process's UID and command
+            // line don't change after exec, so they're read once and
+            // cached by sysinfo itself. `everything()` also re-reads
+            // environ, exe, cwd and root for every process every 1.5s,
+            // which is real cost for fields we never look at.
             self.sys.refresh_processes_specifics(
                 sysinfo::ProcessesToUpdate::All,
                 true,
-                ProcessRefreshKind::everything(),
+                ProcessRefreshKind::new()
+                    .with_cpu()
+                    .with_memory()
+                    .with_disk_usage()
+                    .with_user(UpdateKind::OnlyIfNotSet)
+                    .with_cmd(UpdateKind::OnlyIfNotSet),
             );
             self.last_procs_refresh = Some(now);
         }
@@ -145,7 +170,26 @@ impl Collector {
         let mem = self.collect_mem();
         let (disks, disk_io) = self.collect_disks(dt_secs);
         let net = self.collect_net(dt_secs);
-        let mut procs = self.collect_procs(dt_secs);
+        // Every field `collect_procs` reads (sysinfo's cpu_usage/memory/
+        // disk_usage, plus a fresh /proc/<pid>/status read per process
+        // for thread count and peak RSS) is frozen until the next
+        // refresh -- sysinfo's own comment on `cpu_usage()` says as
+        // much, and it holds for the rest too. Recomputing it on every
+        // tick between refreshes reread ~500+ processes' worth of
+        // /proc/status for no new data, and computed io_read_rate /
+        // io_write_rate as (nonzero delta only on the refresh tick) /
+        // (per-tick dt) -- overstating the rate on that tick by
+        // roughly `PROCS_REFRESH / tick interval`, since the delta
+        // actually accumulated over the whole refresh interval, not
+        // one tick. Only rebuild on the tick that actually refreshed,
+        // using the true elapsed time since the previous refresh.
+        if procs_stale {
+            let refresh_dt = prior_refresh
+                .map(|t| now.duration_since(t).as_secs_f64().max(0.001))
+                .unwrap_or(dt_secs);
+            self.cached_procs = self.collect_procs(refresh_dt);
+        }
+        let mut procs = self.cached_procs.clone();
         // Per-PID bandwidth — measured (nettop) on macOS, attributed
         // elsewhere. Cached at REFRESH inside the collector so we only
         // pay the subprocess cost a few times a second even at 1Hz
@@ -838,6 +882,42 @@ fn interface_up_flags() -> HashMap<String, bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two `sample()` calls well inside `PROCS_REFRESH` must reuse the
+    /// cached process list rather than re-walking `self.sys.processes()`
+    /// and re-reading `/proc/<pid>/status` for every process again.
+    /// Guards the fix where that re-walk ran on every tick regardless of
+    /// staleness (wasted work), and separately caused `io_read_rate` /
+    /// `io_write_rate` to spike on the refresh tick because the byte
+    /// delta was divided by the per-tick interval instead of the actual
+    /// time since the last refresh.
+    #[test]
+    fn procs_cache_is_reused_within_the_refresh_window() {
+        let mut c = Collector::new(1000);
+        let first = c.sample();
+        let refreshed_at = c.last_procs_refresh;
+        let cached_len = c.cached_procs.len();
+
+        // Immediately again -- nowhere near the 3s PROCS_REFRESH window.
+        let second = c.sample();
+
+        assert_eq!(
+            c.last_procs_refresh, refreshed_at,
+            "a sample well inside the refresh window re-triggered a process refresh"
+        );
+        assert_eq!(
+            c.cached_procs.len(),
+            cached_len,
+            "cached_procs changed size without a refresh"
+        );
+        // The snapshot handed to callers is a clone of the cache, not a
+        // recomputation -- same PIDs, same reported values.
+        let first_pids: std::collections::BTreeSet<u32> =
+            first.procs.iter().map(|p| p.pid).collect();
+        let second_pids: std::collections::BTreeSet<u32> =
+            second.procs.iter().map(|p| p.pid).collect();
+        assert_eq!(first_pids, second_pids);
+    }
 
     #[test]
     fn psi_parses_some_and_full() {

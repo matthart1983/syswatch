@@ -27,10 +27,15 @@ use std::time::{Duration, Instant};
 
 use super::model::ProcTick;
 
-const REFRESH: Duration = Duration::from_secs(2);
+const REFRESH: Duration = Duration::from_secs(3);
 /// Detail is for the "what's eating my RAM" question — the top of the
 /// RSS ranking answers it; walking VMAs for every idle daemon doesn't.
-const MAX_PROCS: usize = 64;
+// The Memory tab renders at most `panel_height - 1` rows, well under
+// this on any normal terminal (this project's own demos are recorded
+// at 130x44). Leak tracking (`proc_mem_track`) keeps an entry once a
+// pid enters the top-N, so this only delays first detection for a
+// borderline grower rather than dropping coverage.
+const MAX_PROCS: usize = 48;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcMem {
@@ -58,6 +63,12 @@ impl ProcMem {
 pub struct ProcMemCollector {
     last_sample_at: Option<Instant>,
     cached: HashMap<u32, ProcMem>,
+    /// RSS seen for each pid at its last `smaps_rollup` read. A process
+    /// whose RSS has not moved since is almost certainly unchanged in
+    /// PSS/private/shared too, so its cached detail is reused instead
+    /// of paying for another page-table walk. On an idle desktop that
+    /// is most of the top-N, most of the time.
+    last_rss: HashMap<u32, u64>,
 }
 
 impl ProcMemCollector {
@@ -65,6 +76,7 @@ impl ProcMemCollector {
         Self {
             last_sample_at: None,
             cached: HashMap::new(),
+            last_rss: HashMap::new(),
         }
     }
 
@@ -77,23 +89,38 @@ impl ProcMemCollector {
             .unwrap_or(true);
         if stale {
             self.last_sample_at = Some(Instant::now());
-            self.cached = collect_top(procs);
+            let (fresh, rss) = collect_top(procs, &self.cached, &self.last_rss);
+            self.cached = fresh;
+            self.last_rss = rss;
         }
         self.cached.clone()
     }
 }
 
-fn collect_top(procs: &[ProcTick]) -> HashMap<u32, ProcMem> {
+/// Detail for the top `MAX_PROCS` by RSS. Entries in `prev` whose RSS
+/// matches `prev_rss` are carried over without a read. Returns the new
+/// map and the RSS each entry was read (or carried) at.
+fn collect_top(
+    procs: &[ProcTick],
+    prev: &HashMap<u32, ProcMem>,
+    prev_rss: &HashMap<u32, u64>,
+) -> (HashMap<u32, ProcMem>, HashMap<u32, u64>) {
     let mut by_rss: Vec<(u32, u64)> = procs.iter().map(|p| (p.pid, p.mem_rss)).collect();
     by_rss.sort_by_key(|&(_, rss)| std::cmp::Reverse(rss));
     let mut out = HashMap::new();
-    for (pid, _) in by_rss.into_iter().take(MAX_PROCS) {
-        let m = collect_pid(pid);
+    let mut rss_seen = HashMap::new();
+    for (pid, rss) in by_rss.into_iter().take(MAX_PROCS) {
+        let reuse = prev_rss.get(&pid) == Some(&rss);
+        let m = match prev.get(&pid) {
+            Some(m) if reuse => *m,
+            _ => collect_pid(pid),
+        };
         if !m.is_empty() {
             out.insert(pid, m);
+            rss_seen.insert(pid, rss);
         }
     }
-    out
+    (out, rss_seen)
 }
 
 #[cfg(target_os = "linux")]

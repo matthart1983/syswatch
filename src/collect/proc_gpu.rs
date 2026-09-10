@@ -18,6 +18,12 @@
 //! not yet ready to take on for a single column.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// The fdinfo walk touches every fd of every readable process, which
+/// is ~10 ms on a desktop; GPU attribution does not need to move
+/// faster than the other per-process collectors.
+const REFRESH: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcGpu {
@@ -33,6 +39,8 @@ pub struct ProcGpuCollector {
     /// level is what the column ultimately renders.
     #[cfg(target_os = "linux")]
     prev_engine_ns: HashMap<u32, (u64, std::time::Instant)>,
+    last_sample_at: Option<Instant>,
+    cached: HashMap<u32, ProcGpu>,
 }
 
 impl ProcGpuCollector {
@@ -40,7 +48,21 @@ impl ProcGpuCollector {
         Self::default()
     }
 
+    /// Per-PID GPU attribution, re-sampled at most every `REFRESH`;
+    /// between samples returns the cached map.
     pub fn sample(&mut self) -> HashMap<u32, ProcGpu> {
+        let stale = self
+            .last_sample_at
+            .map(|t| t.elapsed() >= REFRESH)
+            .unwrap_or(true);
+        if stale {
+            self.last_sample_at = Some(Instant::now());
+            self.cached = self.sample_now();
+        }
+        self.cached.clone()
+    }
+
+    fn sample_now(&mut self) -> HashMap<u32, ProcGpu> {
         #[cfg(target_os = "linux")]
         {
             let mut out = self.sample_linux_fdinfo();
@@ -61,6 +83,11 @@ impl ProcGpuCollector {
         let mut out: HashMap<u32, ProcGpu> = HashMap::new();
         let mut totals: HashMap<u32, (u64, u64)> = HashMap::new(); // pid → (engine_ns, mem_bytes)
 
+        // No DRM device, no DRM fds: skip the walk entirely (headless
+        // servers, containers).
+        if !std::path::Path::new("/dev/dri").exists() {
+            return out;
+        }
         let Ok(proc_iter) = fs::read_dir("/proc") else {
             return out;
         };

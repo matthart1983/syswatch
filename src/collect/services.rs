@@ -15,9 +15,10 @@
 
 use std::time::{Duration, Instant};
 
+use crate::collect::command::{run_with_timeout, PERIODIC_TIMEOUT};
 use crate::collect::model::{ServiceStatus, ServiceTick};
 
-const REFRESH: Duration = Duration::from_secs(5);
+const REFRESH: Duration = Duration::from_secs(10);
 
 pub struct ServicesCollector {
     last_sample_at: Option<Instant>,
@@ -38,7 +39,11 @@ impl ServicesCollector {
             .map(|t| t.elapsed() >= REFRESH)
             .unwrap_or(true);
         if stale {
-            self.cached = sample_inner();
+            // A hung or missing `systemctl` / `launchctl` keeps the last
+            // good list rather than blanking the tab.
+            if let Some(fresh) = sample_inner() {
+                self.cached = fresh;
+            }
             self.last_sample_at = Some(Instant::now());
         }
         self.cached.clone()
@@ -46,36 +51,31 @@ impl ServicesCollector {
 }
 
 #[cfg(target_os = "macos")]
-fn sample_inner() -> Vec<ServiceTick> {
-    use std::process::Command;
-    let Ok(out) = Command::new("launchctl").arg("list").output() else {
-        return Vec::new();
-    };
-    parse_launchctl_list(&String::from_utf8_lossy(&out.stdout))
+fn sample_inner() -> Option<Vec<ServiceTick>> {
+    let text = run_with_timeout("launchctl", &["list"], PERIODIC_TIMEOUT)?;
+    Some(parse_launchctl_list(&text))
 }
 
 #[cfg(target_os = "linux")]
-fn sample_inner() -> Vec<ServiceTick> {
-    use std::process::Command;
-    let Ok(out) = Command::new("systemctl")
-        .args([
+fn sample_inner() -> Option<Vec<ServiceTick>> {
+    let text = run_with_timeout(
+        "systemctl",
+        &[
             "list-units",
             "--type=service",
             "--all",
             "--no-legend",
             "--plain",
             "--no-pager",
-        ])
-        .output()
-    else {
-        return Vec::new();
-    };
-    parse_systemctl_list(&String::from_utf8_lossy(&out.stdout))
+        ],
+        PERIODIC_TIMEOUT,
+    )?;
+    Some(parse_systemctl_list(&text))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn sample_inner() -> Vec<ServiceTick> {
-    Vec::new()
+fn sample_inner() -> Option<Vec<ServiceTick>> {
+    None
 }
 
 pub fn parse_launchctl_list(text: &str) -> Vec<ServiceTick> {

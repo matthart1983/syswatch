@@ -14,7 +14,11 @@ use ratatui::Terminal;
 use std::collections::HashMap;
 
 pub use crate::collect::Snapshot;
-use crate::collect::{Collector, Ring};
+use crate::collect::{CollectorHandle, Ring};
+// Only the tests drive a `Collector` directly; live sampling goes through
+// the worker thread.
+#[cfg(test)]
+use crate::collect::Collector;
 use crate::config::SyswatchConfig;
 use crate::insights::{self, Insight};
 use crate::tabs;
@@ -1281,10 +1285,10 @@ pub fn run(opts: Options) -> Result<()> {
     // Skip collector setup in replay mode — IOReport / system_profiler
     // / ioreg probes do real work we don't need when there's no live
     // sampling to do.
-    let mut collector: Option<Collector> = if app.replay_mode {
+    let collector: Option<CollectorHandle> = if app.replay_mode {
         None
     } else {
-        Some(Collector::new(app.user_config.tick_ms))
+        Some(CollectorHandle::spawn(app.user_config.tick_ms))
     };
 
     enable_raw_mode()?;
@@ -1293,66 +1297,81 @@ pub fn run(opts: Options) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
-    // Force the first sample to fire immediately. After that we re-read
-    // the tick interval from `user_config` on every iteration so changes
-    // made through the settings popup take effect on the next cycle
-    // without a restart.
-    let mut last_tick = Instant::now() - Duration::from_secs(60);
+    // The collector thread owns sampling. This loop drains its channel,
+    // handles input, and redraws only when something changed: a new
+    // snapshot, a key, a resize, or a footer flash expiring. It wakes
+    // every POLL_SLICE because crossterm's poll is only woken by the
+    // terminal, not by the channel; the wake itself costs a `try_recv`
+    // and two atomic stores, not a frame.
+    const POLL_SLICE: Duration = Duration::from_millis(50);
+    let mut needs_draw = true;
+
     let res = loop {
-        // 100..=5000 ms — matches the validation in `config::validate`
-        // and `settings::apply_edit`. The clamp is defensive in case a
-        // hand-edited config slipped through.
-        let tick = Duration::from_millis(app.user_config.tick_ms.clamp(100, 5000));
-        if last_tick.elapsed() >= tick {
-            if !app.paused {
-                if let Some(c) = collector.as_mut() {
-                    let s = c.sample();
-                    app.history.push(&s);
-                    app.insights = insights::compute(&app.history, &s);
-                    // Advance Lite's threshold debounce once per *sample*.
-                    // Doing this at render time would tie the alert window
-                    // to the frame rate instead of the collection interval.
-                    let swap_rate =
-                        crate::ui::lite::swap_rate(&app.history, app.user_config.tick_ms);
-                    app.lite.alerts.update(&s, swap_rate);
-                    // Append to active recording (best-effort — we
-                    // don't want one bad write to brick the live UI).
-                    if let Some(rec) = app.recorder.as_mut() {
-                        if let Err(e) = rec.push(&s) {
-                            app.footer_flash = Some((
-                                format!("recording: {}", e),
-                                Instant::now() + Duration::from_secs(3),
-                            ));
-                            app.recorder = None;
-                        }
+        if let Some(c) = collector.as_ref() {
+            // The settings popup edits tick_ms live and `p` toggles pause;
+            // both are cheap to forward every iteration. The clamp
+            // matches `config::validate` and `settings::apply_edit`.
+            c.set_tick_ms(app.user_config.tick_ms.clamp(100, 5000));
+            c.set_paused(app.paused);
+
+            for s in c.drain() {
+                app.history.push(&s);
+                app.insights = insights::compute(&app.history, &s);
+
+                // Advance Lite's threshold debounce once per *sample*.
+                // Doing this at render time would tie the alert window
+                // to the frame rate instead of the collection interval.
+                let swap_rate = crate::ui::lite::swap_rate(&app.history, app.user_config.tick_ms);
+                app.lite.alerts.update(&s, swap_rate);
+
+                // Append to active recording (best-effort — we
+                // don't want one bad write to brick the live UI).
+                if let Some(rec) = app.recorder.as_mut() {
+                    if let Err(e) = rec.push(&s) {
+                        app.footer_flash = Some((
+                            format!("recording: {}", e),
+                            Instant::now() + Duration::from_secs(3),
+                        ));
+                        app.recorder = None;
                     }
-                    app.snap = Some(s);
                 }
-                // Replay mode: nothing to sample, the History ring is
-                // pre-populated and the scrubber drives displayed_snap.
+
+                app.snap = Some(s);
+                needs_draw = true;
             }
-            last_tick = Instant::now();
+            // Replay mode: nothing to sample, the History ring is
+            // pre-populated and the scrubber drives displayed_snap.
         }
 
-        // Lite's key handler needs the frame geometry to clamp scrolling,
-        // and only the renderer normally sees it.
-        if let Ok(size) = term.size() {
-            app.last_area = Rect::new(0, 0, size.width, size.height);
+        // A flash that just expired needs one more frame to disappear.
+        if let Some((_, expires)) = app.footer_flash {
+            if Instant::now() >= expires {
+                app.footer_flash = None;
+                needs_draw = true;
+            }
         }
 
-        if let Some(snap) = app.displayed_snap() {
-            term.draw(|f| draw(f, &app, snap))?;
+        if needs_draw {
+            // Lite's key handler needs the frame geometry to clamp
+            // scrolling, and only the renderer normally sees it.
+            if let Ok(size) = term.size() {
+                app.last_area = Rect::new(0, 0, size.width, size.height);
+            }
+            if let Some(snap) = app.displayed_snap() {
+                term.draw(|f| draw(f, &app, snap))?;
+            }
+            needs_draw = false;
         }
 
-        let timeout = tick.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout.max(Duration::from_millis(33)))? {
+        if event::poll(POLL_SLICE)? {
             match event::read()? {
                 Event::Key(k) => {
                     if app.handle_key(k) {
                         break Ok::<(), anyhow::Error>(());
                     }
+                    needs_draw = true;
                 }
-                Event::Resize(_, _) => {}
+                Event::Resize(_, _) => needs_draw = true,
                 _ => {}
             }
         }

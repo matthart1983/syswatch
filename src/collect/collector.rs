@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Instant, SystemTime};
 
-use sysinfo::{Disks, Networks, Pid, ProcessRefreshKind, RefreshKind, System, Users};
+use sysinfo::{Disks, Networks, Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind, Users};
 
 use super::gpu::GpuDiscovery;
 #[cfg(target_os = "macos")]
@@ -131,10 +131,22 @@ impl Collector {
             .map(|t| now.duration_since(t) >= PROCS_REFRESH)
             .unwrap_or(true);
         if procs_stale {
+            // Only the fields `collect_procs` reads, and at the same
+            // update cadence `everything()` used for them: user and cmd
+            // are `OnlyIfNotSet` because a process's UID and command
+            // line don't change after exec, so they're read once and
+            // cached by sysinfo itself. `everything()` also re-reads
+            // environ, exe, cwd and root for every process every 1.5s,
+            // which is real cost for fields we never look at.
             self.sys.refresh_processes_specifics(
                 sysinfo::ProcessesToUpdate::All,
                 true,
-                ProcessRefreshKind::everything(),
+                ProcessRefreshKind::new()
+                    .with_cpu()
+                    .with_memory()
+                    .with_disk_usage()
+                    .with_user(UpdateKind::OnlyIfNotSet)
+                    .with_cmd(UpdateKind::OnlyIfNotSet),
             );
             self.last_procs_refresh = Some(now);
         }

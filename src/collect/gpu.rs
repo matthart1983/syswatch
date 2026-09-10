@@ -228,12 +228,14 @@ impl GpuDiscovery {
 
 #[cfg(target_os = "macos")]
 fn discover() -> Vec<GpuTick> {
-    use std::process::Command;
-    let output = Command::new("system_profiler")
-        .args(["SPDisplaysDataType", "-json"])
-        .output();
-    let Ok(out) = output else { return Vec::new() };
-    let text = String::from_utf8_lossy(&out.stdout);
+    use crate::collect::command::{run_with_timeout, DISCOVERY_TIMEOUT};
+    let Some(text) = run_with_timeout(
+        "system_profiler",
+        &["SPDisplaysDataType", "-json"],
+        DISCOVERY_TIMEOUT,
+    ) else {
+        return Vec::new();
+    };
     let Ok(parsed): Result<serde_json::Value, _> = serde_json::from_str(&text) else {
         return Vec::new();
     };
@@ -301,14 +303,15 @@ struct MacGpuStats {
 
 #[cfg(target_os = "macos")]
 fn collect_macos_gpu_stats() -> Vec<MacGpuStats> {
-    use std::process::Command;
-    let Ok(out) = Command::new("ioreg")
-        .args(["-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"])
-        .output()
-    else {
+    use crate::collect::command::{run_with_timeout, PERIODIC_TIMEOUT};
+    let Some(text) = run_with_timeout(
+        "ioreg",
+        &["-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"],
+        PERIODIC_TIMEOUT,
+    ) else {
         return Vec::new();
     };
-    parse_ioreg_perf_stats(&String::from_utf8_lossy(&out.stdout))
+    parse_ioreg_perf_stats(&text)
 }
 
 /// Parse one `MacGpuStats` per IOAccelerator block from ioreg output.

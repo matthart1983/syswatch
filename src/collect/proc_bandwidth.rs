@@ -20,13 +20,12 @@
 //! sub-second tick rates.
 
 use std::collections::HashMap;
-use std::io::Read;
-use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
 use netwatch_sdk::collectors::connections::ConnectionDetail;
 
+use super::command::run_with_timeout;
 use super::model::InterfaceTick;
 
 const REFRESH: Duration = Duration::from_secs(2);
@@ -293,7 +292,7 @@ impl NettopState {
     fn sample(&mut self) -> Option<HashMap<u32, (f64, f64)>> {
         // -t external keeps loopback traffic out of the counters so
         // the numbers describe the wire, matching the host-level KPIs.
-        let text = run_command_with_timeout(
+        let text = run_with_timeout(
             "nettop",
             &[
                 "-P",
@@ -380,61 +379,20 @@ fn parse_nettop(text: &str) -> NettopCounters {
 
 #[cfg(target_os = "linux")]
 fn collect_process_connections() -> Vec<ConnectionDetail> {
-    let text = run_command_with_timeout("ss", &["-tunapi"], COMMAND_TIMEOUT).unwrap_or_default();
+    let text = run_with_timeout("ss", &["-tunapi"], COMMAND_TIMEOUT).unwrap_or_default();
     parse_ss_connections(&text)
 }
 
 #[cfg(target_os = "macos")]
 fn collect_process_connections() -> Vec<ConnectionDetail> {
-    let text =
-        run_command_with_timeout("lsof", &["-i", "-n", "-P", "-F", "pcPtTn"], COMMAND_TIMEOUT)
-            .unwrap_or_default();
+    let text = run_with_timeout("lsof", &["-i", "-n", "-P", "-F", "pcPtTn"], COMMAND_TIMEOUT)
+        .unwrap_or_default();
     parse_macos_lsof_connections(&text)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn collect_process_connections() -> Vec<ConnectionDetail> {
     Vec::new()
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn run_command_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-
-    let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        text
-    });
-
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                let _ = child.wait();
-                return reader.join().ok();
-            }
-            Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = reader.join();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = reader.join();
-                return None;
-            }
-        }
-    }
 }
 
 #[cfg(any(target_os = "linux", test))]

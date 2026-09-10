@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use crate::collect::command::{run_with_timeout, PERIODIC_TIMEOUT};
 use crate::collect::model::{ServiceStatus, ServiceTick};
 
-const REFRESH: Duration = Duration::from_secs(5);
+const REFRESH: Duration = Duration::from_secs(10);
 
 pub struct ServicesCollector {
     last_sample_at: Option<Instant>,

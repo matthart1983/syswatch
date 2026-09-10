@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 /// The fdinfo walk touches every fd of every readable process, which
 /// is ~10 ms on a desktop; GPU attribution does not need to move
 /// faster than the other per-process collectors.
-const REFRESH: Duration = Duration::from_secs(2);
+const REFRESH: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcGpu {

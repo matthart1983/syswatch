@@ -125,7 +125,11 @@ impl Collector {
         // full process scan every frame.
         self.sys.refresh_cpu_all();
         self.sys.refresh_memory();
-        const PROCS_REFRESH: std::time::Duration = std::time::Duration::from_millis(1500);
+        // 1.5s -> 3s: halves the amortized cost of the heaviest single
+        // stage in the collector (a full /proc scan for cpu/mem/disk_usage
+        // over every process) for a staleness bound most `top`-family
+        // tools already accept.
+        const PROCS_REFRESH: std::time::Duration = std::time::Duration::from_secs(3);
         let procs_stale = self
             .last_procs_refresh
             .map(|t| now.duration_since(t) >= PROCS_REFRESH)

@@ -27,10 +27,15 @@ use std::time::{Duration, Instant};
 
 use super::model::ProcTick;
 
-const REFRESH: Duration = Duration::from_secs(2);
+const REFRESH: Duration = Duration::from_secs(3);
 /// Detail is for the "what's eating my RAM" question — the top of the
 /// RSS ranking answers it; walking VMAs for every idle daemon doesn't.
-const MAX_PROCS: usize = 64;
+// The Memory tab renders at most `panel_height - 1` rows, well under
+// this on any normal terminal (this project's own demos are recorded
+// at 130x44). Leak tracking (`proc_mem_track`) keeps an entry once a
+// pid enters the top-N, so this only delays first detection for a
+// borderline grower rather than dropping coverage.
+const MAX_PROCS: usize = 48;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcMem {

@@ -106,7 +106,7 @@ impl ServiceStatus {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServiceTick {
     pub name: String,
     pub status: ServiceStatus,

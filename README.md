@@ -101,7 +101,7 @@ Home / End          →  Oldest sample / live
 p                   →  Pause
 g                   →  Graph style (bars / dots)
 t                   →  Cycle theme (incl. "terminal" — uses your terminal's own palette)
-,                   →  Settings (tick, theme, btop-style fade)
+,                   →  Settings (tick, theme, graph fade)
 S / R               →  Snapshot to disk / record session
 V                   →  Cycle views: Full → Lite → Dense
 L                   →  Jump straight to the Lite view
@@ -183,8 +183,8 @@ q  quit     p  pause    /  filter (name or user)
 ↵  detail   L  full     ?  help          ↑↓ / j k move   Esc unwind
 ```
 
-Recorded with `vhs demo-lite.tape` in the btop-style look — braille area plots
-(`g`) over the faint dot grid, with the right-bright / left-dim gradient — at
+Recorded with `vhs demo-lite.tape` — braille area plots (`g`) over the faint
+dot grid, with a right-bright / left-dim gradient — at
 `--tick 250` so the charts fill inside a GIF. They hold one sample per column
 and fill from the right in real time, so at the 1 Hz default the 78-column
 chart takes 78 seconds. Nothing is fast-forwarded: the axis label measures the
@@ -207,7 +207,7 @@ as the rest of syswatch.
 
 **Insights tab.** Heuristic anomaly detection over the rolling session — swap thrash, runaway processes, disk full, memory pressure, high load, zombie parties — surfaced as plain-English cards with a suggested tab. The Overview's bottom strip and the tab bar's `[+]` badge keep them in sight from anywhere.
 
-**Session-wide scrubbing.** The Timeline tab's `←/→` rewinds the entire app — every panel transparently shows historical state. `R` records a session to a `.swr` file; `--replay` scrubs it back later. `S` dumps the current snapshot to disk.
+**Live scrubbing, full-session recording.** The Timeline tab's `←/→` rewinds every panel at once over the last 120 samples it keeps live — two minutes at the default 1 Hz tick, less at a faster one. For anything longer, `R` records the whole session to a `.swr` file as it runs; `--replay` scrubs that back afterward with no length limit, and `S` dumps the current snapshot to disk.
 
 **Honest about platform limits.** Where data needs sudo (`powermetrics` for fans, per-component power, GPU util on Apple Silicon) the tab shows what we *can* get for free and a one-line note about what's gated. Nothing is faked, nothing prompts.
 
@@ -221,7 +221,7 @@ as the rest of syswatch.
 
 ## Scope
 
-All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), the Dense view (`V` / `--dense`), and the btop-style fade rendering are all live.
+All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), the Dense view (`V` / `--dense`), and the graph-fade rendering are all live.
 
 Lite's temp / fan / power vitals depend on platform sensors: Linux reads `/sys/class/hwmon`, `/sys/class/thermal` and RAPL; macOS needs IOKit/SMC access, so on Apple Silicon those three commonly render `--` while CPU, memory, disk and processes remain fully live.
 

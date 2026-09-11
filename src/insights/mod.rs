@@ -5,6 +5,8 @@
 //!
 //! Read-only by design — Insights surface what to look at, never mutate.
 
+use std::time::Duration;
+
 use crate::app::{History, TabId};
 use crate::collect::Snapshot;
 
@@ -35,6 +37,30 @@ pub struct Insight {
 
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * 1024 * 1024;
+
+/// Real elapsed time between `snap` (the current tick) and the sample at
+/// `baseline_idx` in the *oldest-to-newest* ordering a caller already used
+/// to pull a metric's own baseline value out of e.g. `h.swap.to_vec()`.
+///
+/// `h.session` is pushed in lockstep with every other per-tick ring (same
+/// `History::push` call, same length always), so the same index lines up
+/// exactly -- read here by reference via `nth_back` rather than cloning the
+/// ring, since each entry is a full `Snapshot` including every process's
+/// name and command line. Reads the actual recorded timestamps rather than
+/// assuming every tick took the configured interval, so the reported
+/// window stays honest across a live tick-rate change or a replay recorded
+/// at a different rate than it was captured at.
+fn elapsed_secs_since(h: &History, snap: &Snapshot, baseline_idx: usize) -> u64 {
+    let len = h.session.len();
+    if len == 0 {
+        return 0;
+    }
+    let n = len.saturating_sub(1).saturating_sub(baseline_idx);
+    h.session
+        .nth_back(n)
+        .map(|old| snap.t.duration_since(old.t).unwrap_or_default().as_secs())
+        .unwrap_or(0)
+}
 
 pub fn compute(h: &History, snap: &Snapshot) -> Vec<Insight> {
     let mut out: Vec<Insight> = Vec::new();
@@ -95,6 +121,7 @@ fn insight_swap_thrash(h: &History, snap: &Snapshot) -> Option<Insight> {
     let baseline_idx = history.len().saturating_sub(30);
     let baseline = history[baseline_idx];
     let growth = now.saturating_sub(baseline);
+    let elapsed_secs = elapsed_secs_since(h, snap, baseline_idx);
 
     let (severity, title) = if growth >= 512 * MIB {
         (
@@ -103,7 +130,7 @@ fn insight_swap_thrash(h: &History, snap: &Snapshot) -> Option<Insight> {
                 "swap thrash — {:.1} GB swapped, +{:.0} MB in last {}s",
                 now as f64 / GIB as f64,
                 growth as f64 / MIB as f64,
-                history.len() - baseline_idx
+                elapsed_secs
             ),
         )
     } else if growth >= 100 * MIB {
@@ -112,7 +139,7 @@ fn insight_swap_thrash(h: &History, snap: &Snapshot) -> Option<Insight> {
             format!(
                 "memory pressure — swap rising +{:.0} MB over last {}s",
                 growth as f64 / MIB as f64,
-                history.len() - baseline_idx
+                elapsed_secs
             ),
         )
     } else {
@@ -260,7 +287,8 @@ fn insight_memory_pressure(h: &History, snap: &Snapshot) -> Option<Insight> {
     if last_n < 3 {
         return None;
     }
-    let avg = recent[recent.len() - last_n..].iter().sum::<f32>() / last_n as f32;
+    let baseline_idx = recent.len() - last_n;
+    let avg = recent[baseline_idx..].iter().sum::<f32>() / last_n as f32;
     let severity = if avg >= 0.95 {
         Severity::Crit
     } else if avg >= 0.85 {
@@ -268,12 +296,13 @@ fn insight_memory_pressure(h: &History, snap: &Snapshot) -> Option<Insight> {
     } else {
         return None;
     };
+    let elapsed_secs = elapsed_secs_since(h, snap, baseline_idx);
     Some(Insight {
         severity,
         title: format!(
             "memory pressure — RAM {:.0}% used over last {}s",
             avg * 100.0,
-            last_n
+            elapsed_secs
         ),
         body: vec![
             format!(
@@ -387,6 +416,8 @@ fn insight_gpu_pegged(h: &History, snap: &Snapshot) -> Option<Insight> {
     } else {
         return None;
     };
+    let baseline_idx = recent.len() - last_n;
+    let elapsed_secs = elapsed_secs_since(h, snap, baseline_idx);
     let busiest = snap
         .gpus
         .iter()
@@ -398,7 +429,7 @@ fn insight_gpu_pegged(h: &History, snap: &Snapshot) -> Option<Insight> {
         severity,
         title: format!(
             "GPU pegged — {:.0}% util sustained over last {}s",
-            avg, last_n
+            avg, elapsed_secs
         ),
         body: vec![
             busiest,
@@ -558,16 +589,18 @@ fn insight_energy_hog(h: &History, snap: &Snapshot) -> Option<Insight> {
 /// and proportionally since we first saw it. RSS is deliberately not
 /// used: shared-page noise makes it cry wolf.
 fn insight_mem_leak(h: &History, snap: &Snapshot) -> Option<Insight> {
-    // ~2 minutes of sightings before judging; both absolute and
-    // relative growth required so neither big-but-stable nor
-    // tiny-but-doubling procs trip it.
-    const MIN_TICKS: u32 = 120;
+    // ~2 minutes of real elapsed time before judging -- not a tick
+    // count, so this doesn't fire after 120 ticks of a fast tick rate
+    // (well under 2 real minutes) or fail to fire after 2 real minutes
+    // of a slow one. Both absolute and relative growth required so
+    // neither big-but-stable nor tiny-but-doubling procs trip it.
+    const MIN_DURATION: Duration = Duration::from_secs(120);
     const MIN_GROWTH: u64 = 256 * MIB;
-    let (pid, (base, _ticks, latest)) = h
+    let (pid, (base, _first_seen, latest)) = h
         .proc_mem_track
         .iter()
-        .filter(|(_, (base, ticks, latest))| {
-            *ticks >= MIN_TICKS
+        .filter(|(_, (base, first_seen, latest))| {
+            snap.t.duration_since(*first_seen).unwrap_or_default() >= MIN_DURATION
                 && latest.saturating_sub(*base) >= MIN_GROWTH
                 && (*latest as f64) >= (*base as f64) * 1.3
         })
@@ -1073,6 +1106,114 @@ mod tests {
         // VRAM total unknown — can't compute fraction, must not fire.
         let s = snap_with_gpu(Some(50.0), Some(8 * GIB), None);
         assert!(first_with(&compute(&h, &s), "VRAM").is_none());
+    }
+
+    // ── elapsed_secs_since ───────────────────────────────────────────────
+
+    #[test]
+    fn elapsed_secs_since_reads_real_time_not_tick_count() {
+        // Five ticks spaced 4s apart -- a deliberately unusual rate so a
+        // tick-count-based answer (5, or 4) and the real-time answer (16)
+        // are obviously different numbers, not off-by-one variants of the
+        // same one.
+        let mut h = empty_history();
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        for i in 0..5u64 {
+            h.push(&Snapshot {
+                t: t0 + Duration::from_secs(i * 4),
+                ..Default::default()
+            });
+        }
+        let now = Snapshot {
+            t: t0 + Duration::from_secs(4 * 4),
+            ..Default::default()
+        };
+        // baseline_idx 0 = the oldest of the 5 pushed ticks (t=0s).
+        assert_eq!(elapsed_secs_since(&h, &now, 0), 16);
+        // baseline_idx 3 = the 4th pushed tick (t=12s) -- 4s before now.
+        assert_eq!(elapsed_secs_since(&h, &now, 3), 4);
+    }
+
+    #[test]
+    fn elapsed_secs_since_on_empty_history_is_zero() {
+        let h = empty_history();
+        let now = Snapshot::default();
+        assert_eq!(elapsed_secs_since(&h, &now, 0), 0);
+    }
+
+    // ── mem_leak ─────────────────────────────────────────────────────────
+
+    fn leak_proc(pid: u32, footprint: u64) -> ProcTick {
+        ProcTick {
+            pid,
+            name: "leaky".into(),
+            mem_footprint: Some(footprint),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mem_leak_does_not_fire_on_tick_count_alone_at_a_fast_tick_rate() {
+        // 120 ticks (the old MIN_TICKS) at 100ms each is only 12 real
+        // seconds -- must not fire despite hitting the old tick-count
+        // threshold, since growth and ratio both clear their gates too.
+        let mut h = empty_history();
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        for i in 0..120u64 {
+            h.push(&Snapshot {
+                t: t0 + Duration::from_millis(i * 100),
+                procs: vec![leak_proc(42, 100 * MIB + i * 3 * MIB)],
+                ..Default::default()
+            });
+        }
+        let last = Snapshot {
+            t: t0 + Duration::from_millis(119 * 100),
+            procs: vec![leak_proc(42, 100 * MIB + 119 * 3 * MIB)],
+            ..Default::default()
+        };
+        assert!(first_with(&compute(&h, &last), "possible leak").is_none());
+    }
+
+    #[test]
+    fn mem_leak_fires_on_real_elapsed_time_with_few_ticks() {
+        // Only 5 ticks, but 30s apart -- 120s of real elapsed growth
+        // despite being far short of the old MIN_TICKS=120 tick count.
+        let mut h = empty_history();
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        for i in 0..5u64 {
+            h.push(&Snapshot {
+                t: t0 + Duration::from_secs(i * 30),
+                procs: vec![leak_proc(7, 100 * MIB + i * 100 * MIB)],
+                ..Default::default()
+            });
+        }
+        let last = Snapshot {
+            t: t0 + Duration::from_secs(4 * 30),
+            procs: vec![leak_proc(7, 100 * MIB + 4 * 100 * MIB)],
+            ..Default::default()
+        };
+        let result = compute(&h, &last);
+        assert!(first_with(&result, "possible leak").is_some());
+    }
+
+    #[test]
+    fn mem_leak_does_not_fire_below_min_growth_even_over_time() {
+        let mut h = empty_history();
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        for i in 0..5u64 {
+            // Only ~50 MiB of growth total -- under MIN_GROWTH (256 MiB).
+            h.push(&Snapshot {
+                t: t0 + Duration::from_secs(i * 30),
+                procs: vec![leak_proc(7, 100 * MIB + i * 10 * MIB)],
+                ..Default::default()
+            });
+        }
+        let last = Snapshot {
+            t: t0 + Duration::from_secs(4 * 30),
+            procs: vec![leak_proc(7, 100 * MIB + 4 * 10 * MIB)],
+            ..Default::default()
+        };
+        assert!(first_with(&compute(&h, &last), "possible leak").is_none());
     }
 
     // ── compute() ordering / capping ──────────────────────────────────────

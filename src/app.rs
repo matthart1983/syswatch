@@ -1,5 +1,5 @@
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -99,9 +99,13 @@ pub struct History {
     /// the energy-hog insight doesn't fire on one busy window.
     pub proc_power_ewma: HashMap<u32, f32>,
     /// Per-pid leak tracking over detailed memory (footprint on macOS,
-    /// private on Linux): pid → (baseline, ticks observed, latest).
+    /// private on Linux): pid → (baseline, first observed, latest). The
+    /// timestamp is `Snapshot::t` at first sighting, not a tick count --
+    /// `insight_mem_leak`'s "sustained growth" window is a real time
+    /// duration, honest across a live tick-rate change or a replay
+    /// recorded at a different rate than it was captured at.
     /// Only procs the memory sampler covers (top-N by RSS) are tracked.
-    pub proc_mem_track: HashMap<u32, (u64, u32, u64)>,
+    pub proc_mem_track: HashMap<u32, (u64, SystemTime, u64)>,
     /// Full session: every snapshot pushed in order. Bounded — sized to
     /// match the metric rings so scrubbing stays in sync. The Timeline tab
     /// drives scrubbing; other tabs read App::displayed_snap().
@@ -276,11 +280,10 @@ impl History {
             };
             self.proc_mem_track
                 .entry(proc_.pid)
-                .and_modify(|(_base, ticks, latest)| {
-                    *ticks += 1;
+                .and_modify(|(_base, _first_seen, latest)| {
                     *latest = metric;
                 })
-                .or_insert((metric, 1, metric));
+                .or_insert((metric, snap.t, metric));
         }
     }
 }

@@ -52,6 +52,10 @@ dirs = "5"
 # Vec/Option/String handling at the cost of zero-copy reads we don't
 # need for this workload.
 postcard = { version = "1", features = ["use-std"] }
+# Block-level compression for .swr recordings, on top of the process-table
+# delta encoding in recording.rs — general-purpose compression still helps
+# once the identity/volatile split has removed the biggest redundancy.
+zstd = "0.14"
 
 # Linux NVIDIA support is opt-in: enabling `gpu-nvidia` links libnvidia-ml,
 # which only ships on hosts with the proprietary driver installed.

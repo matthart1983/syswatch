@@ -55,7 +55,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Local};
@@ -552,8 +552,201 @@ impl Iterator for RecordingReader {
 /// Read every snapshot in a .swr file. Tolerant of truncated tails
 /// (returns what it could parse) so a recording cut off by a crash
 /// is still useful.
+///
+/// Nothing in the binary calls this today -- `--replay` streams via
+/// [`RecordingReader`] directly (see `app::run`) to avoid holding two
+/// full copies of a recording in memory. Kept as the obvious "just
+/// give me the Vec" convenience for a caller that doesn't care about
+/// that, and for the tests in this module, which use it throughout as
+/// the simplest way to assert on what got written.
+#[allow(dead_code)]
 pub fn read(path: &Path) -> Result<Vec<Snapshot>> {
     Ok(RecordingReader::open(path)?.collect())
+}
+
+/// Count the ticks in a .swr file without holding them all in memory
+/// at once -- each decoded `Snapshot` is dropped as soon as it's
+/// counted. Used to size `History`'s rings before streaming a replay
+/// in via [`RecordingReader`] directly, so a caller never needs to
+/// choose between "materialize the whole recording to know its length"
+/// and "guess a size and risk evicting the head." Decodes the file
+/// twice in total across both calls (this one, then the real replay
+/// pass) -- real CPU cost, but decoding is fast and the file is small
+/// (v3's whole point), so it's cheap next to holding two full copies
+/// of a long recording in memory.
+pub fn count(path: &Path) -> Result<usize> {
+    Ok(RecordingReader::open(path)?.count())
+}
+
+// ── Unattended recording (`syswatch --record --keep`) ──────────────────
+
+/// Directory for `--record`'s rotating chunk files. Separate from
+/// [`dir`] (the interactive `R`-key recordings) so the two never
+/// collide or get pruned into each other -- an unattended recording
+/// and a manual one you're keeping on purpose are different things.
+pub fn ring_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|d| d.join("syswatch").join("ring"))
+}
+
+/// How long each rotated chunk file covers before a new one starts.
+/// Small enough that `--keep` prunes in reasonably fine steps (up to
+/// one chunk's worth of slack past the requested window, not a whole
+/// day of it); large enough that a week of retention is a few dozen
+/// files, not thousands.
+pub const RING_CHUNK_DURATION: Duration = Duration::from_secs(3600);
+
+fn fresh_chunk_path(ring_dir: &Path, seq: u64) -> PathBuf {
+    // The timestamp is for a human `ls`-ing the directory; `seq` is
+    // what actually guarantees uniqueness. Two rotations landing in
+    // the same wall-clock second can't happen at the real 1-hour
+    // chunk_duration, but a short chunk_duration (tests; a future
+    // `--chunk` override) or a clock that jumps backward would
+    // otherwise collide on `Recorder::create`'s `create_new(true)`.
+    let ts: DateTime<Local> = SystemTime::now().into();
+    ring_dir.join(format!(
+        "chunk-{}-{:06}.swr",
+        ts.format("%Y-%m-%dT%H-%M-%S"),
+        seq
+    ))
+}
+
+/// Parse a retention duration like `"24h"`, `"7d"`, `"90m"`, `"3600s"`
+/// -- a number followed by a single unit letter.
+pub fn parse_retention(s: &str) -> Result<Duration> {
+    let s = s.trim();
+    if s.len() < 2 {
+        return Err(anyhow!(
+            "invalid duration '{s}' -- expected a number followed by s/m/h/d, e.g. '24h'"
+        ));
+    }
+    let (num_str, unit) = s.split_at(s.len() - 1);
+    let n: u64 = num_str.parse().map_err(|_| {
+        anyhow!("invalid duration '{s}' -- expected a number followed by s/m/h/d, e.g. '24h'")
+    })?;
+    let secs = match unit {
+        "s" => n,
+        "m" => n.saturating_mul(60),
+        "h" => n.saturating_mul(3600),
+        "d" => n.saturating_mul(86400),
+        other => {
+            return Err(anyhow!(
+                "invalid duration unit '{other}' in '{s}' -- expected s/m/h/d, e.g. '24h'"
+            ))
+        }
+    };
+    if secs == 0 {
+        return Err(anyhow!("retention duration must be greater than zero"));
+    }
+    Ok(Duration::from_secs(secs))
+}
+
+/// Remove chunk files in `ring_dir` whose mtime is older than `keep`.
+/// A chunk's mtime is its last-written time -- roughly when its
+/// newest data was captured, since nothing appends to a chunk again
+/// once it's rotated out. The single most recent chunk is never
+/// removed even if it's individually older than `keep`, so a
+/// recorder that's been paused or a `--keep` shorter than one chunk
+/// can't prune away the only file that exists. Returns the number of
+/// files removed.
+fn prune_chunks(ring_dir: &Path, keep: Duration) -> Result<usize> {
+    let mut entries: Vec<(PathBuf, SystemTime)> = fs::read_dir(ring_dir)
+        .context("listing ring directory")?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "swr"))
+        .filter_map(|e| {
+            e.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| (e.path(), t))
+        })
+        .collect();
+    entries.sort_by_key(|(_, t)| *t);
+
+    let cutoff = SystemTime::now()
+        .checked_sub(keep)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let keepable = entries.len().saturating_sub(1);
+    let mut removed = 0;
+    for (path, mtime) in entries.into_iter().take(keepable) {
+        if mtime < cutoff {
+            fs::remove_file(&path)
+                .with_context(|| format!("removing expired chunk {}", path.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Run the unattended recorder: sample on `tick`, write into
+/// rotating chunk files under `ring_dir` (a new one every
+/// `chunk_duration`), and prune chunks older than `keep` each time a
+/// new one starts. Runs until `stop` is set to `true` -- the real
+/// entry point (`main.rs`) sets that from a Ctrl-C/SIGTERM handler;
+/// tests set it directly, no signal handling involved.
+///
+/// Flushes the current chunk on every exit path (the loop ending, or
+/// an error partway through), since losing an unattended recording's
+/// last few minutes to an ungraceful stop would defeat the point of
+/// the feature.
+pub fn run_ring(
+    ring_dir: &Path,
+    keep: Duration,
+    chunk_duration: Duration,
+    tick: Duration,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+
+    fs::create_dir_all(ring_dir).context("creating ring directory")?;
+
+    let mut collector = crate::collect::Collector::new(tick.as_millis() as u64);
+    let mut current: Option<Recorder> = None;
+    let mut chunk_started = Instant::now();
+    let mut chunk_seq: u64 = 0;
+    // Poll `stop` at a finer grain than `tick` so a request to stop is
+    // noticed promptly even at a slow (e.g. 5s) sample rate, without
+    // busy-waiting between samples.
+    const STOP_POLL: Duration = Duration::from_millis(200);
+    let mut next_sample = Instant::now();
+
+    let result = (|| -> Result<()> {
+        while !stop.load(Ordering::Relaxed) {
+            let now = Instant::now();
+            if now < next_sample {
+                std::thread::sleep(STOP_POLL.min(next_sample - now));
+                continue;
+            }
+
+            if current.is_none() || now.duration_since(chunk_started) >= chunk_duration {
+                // Dropping the old recorder (if any) flushes its final
+                // block before the new one is created.
+                current = None;
+                current = Some(Recorder::create(fresh_chunk_path(ring_dir, chunk_seq))?);
+                chunk_seq += 1;
+                chunk_started = now;
+                prune_chunks(ring_dir, keep)?;
+            }
+
+            let snap = collector.sample();
+            if let Some(rec) = current.as_mut() {
+                // A single failed push (e.g. a transient disk error)
+                // doesn't tear down an unattended recorder meant to
+                // run for hours -- log it and keep sampling; the next
+                // chunk rotation gets a fresh file and fresh chance.
+                if let Err(e) = rec.push(&snap) {
+                    eprintln!("syswatch: recording write failed: {e}");
+                }
+            }
+            next_sample = now + tick;
+        }
+        Ok(())
+    })();
+
+    // Explicit drop (rather than relying on scope end) so the final
+    // flush happens before `run_ring` returns, whether it's returning
+    // Ok (stop was requested) or Err (a chunk-rotation failure).
+    drop(current);
+    result
 }
 
 #[cfg(test)]
@@ -810,5 +1003,228 @@ mod tests {
         drop(f);
         let snaps = read(&path).unwrap();
         assert_eq!(snaps.len(), 1);
+    }
+
+    // ── count() ──────────────────────────────────────────────────────
+
+    #[test]
+    fn count_matches_read_len_without_materializing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("count.swr");
+        {
+            let mut rec = Recorder::create(path.clone()).unwrap();
+            for i in 0..7u64 {
+                rec.push(&snap_at(i)).unwrap();
+            }
+        }
+        assert_eq!(count(&path).unwrap(), 7);
+        assert_eq!(count(&path).unwrap(), read(&path).unwrap().len());
+    }
+
+    // ── parse_retention ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_retention_accepts_each_unit() {
+        assert_eq!(parse_retention("30s").unwrap(), Duration::from_secs(30));
+        assert_eq!(
+            parse_retention("45m").unwrap(),
+            Duration::from_secs(45 * 60)
+        );
+        assert_eq!(
+            parse_retention("24h").unwrap(),
+            Duration::from_secs(24 * 3600)
+        );
+        assert_eq!(
+            parse_retention("7d").unwrap(),
+            Duration::from_secs(7 * 86400)
+        );
+    }
+
+    #[test]
+    fn parse_retention_rejects_garbage() {
+        assert!(parse_retention("").is_err());
+        assert!(parse_retention("24").is_err()); // no unit
+        assert!(parse_retention("h").is_err()); // no number
+        assert!(parse_retention("24x").is_err()); // unknown unit
+        assert!(parse_retention("-5h").is_err()); // negative
+        assert!(parse_retention("0h").is_err()); // zero
+    }
+
+    // ── prune_chunks ─────────────────────────────────────────────────
+
+    fn touch_chunk(dir: &Path, name: &str, age: Duration) {
+        let path = dir.join(name);
+        fs::write(&path, b"x").unwrap();
+        let mtime = SystemTime::now().checked_sub(age).unwrap();
+        let file = File::options().write(true).open(&path).unwrap();
+        file.set_modified(mtime).unwrap();
+    }
+
+    #[test]
+    fn prune_chunks_removes_only_expired_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        touch_chunk(dir.path(), "chunk-old.swr", Duration::from_secs(3600 * 30));
+        touch_chunk(dir.path(), "chunk-mid.swr", Duration::from_secs(3600 * 20));
+        touch_chunk(dir.path(), "chunk-new.swr", Duration::from_secs(60));
+        // Not a .swr file -- must survive regardless of age.
+        touch_chunk(dir.path(), "notes.txt", Duration::from_secs(3600 * 100));
+
+        let removed = prune_chunks(dir.path(), Duration::from_secs(3600 * 24)).unwrap();
+        assert_eq!(removed, 1);
+        let remaining: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!remaining.contains(&"chunk-old.swr".to_string()));
+        assert!(remaining.contains(&"chunk-mid.swr".to_string()));
+        assert!(remaining.contains(&"chunk-new.swr".to_string()));
+        assert!(remaining.contains(&"notes.txt".to_string()));
+    }
+
+    #[test]
+    fn prune_chunks_never_removes_the_last_survivor() {
+        // A single ancient chunk -- e.g. a recorder that's been paused,
+        // or a --keep shorter than one chunk_duration -- must not be
+        // pruned away to zero files.
+        let dir = tempfile::tempdir().unwrap();
+        touch_chunk(
+            dir.path(),
+            "chunk-only.swr",
+            Duration::from_secs(3600 * 1000),
+        );
+        let removed = prune_chunks(dir.path(), Duration::from_secs(1)).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    // ── run_ring ─────────────────────────────────────────────────────
+
+    /// Blocks until at least one `.swr` file exists in `dir`, or panics
+    /// after `timeout`. Every `run_ring` test needs this instead of a
+    /// bare fixed sleep-then-stop: a thread spawn's actual scheduling
+    /// delay is not bounded, especially on a loaded machine, so
+    /// "sleep N ms, assume the thread has done useful work by now" is
+    /// inherently racy. Waiting for observable filesystem evidence
+    /// that the thread has actually started isn't.
+    fn wait_for_first_chunk(dir: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let has_chunk = fs::read_dir(dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .any(|e| e.path().extension().is_some_and(|x| x == "swr"));
+            if has_chunk {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no chunk file appeared within the timeout"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn ring_recorder_rotates_and_prunes_on_a_short_fast_schedule() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ring_dir = dir.path().to_path_buf();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_writer = Arc::clone(&stop);
+
+        // Tiny tick and chunk duration so several rotations happen in
+        // well under a second of real test time, and a keep window
+        // short enough that early chunks get pruned during the run.
+        let tick = Duration::from_millis(20);
+        let chunk_duration = Duration::from_millis(60);
+        let keep = Duration::from_millis(150);
+
+        let handle = std::thread::spawn({
+            let ring_dir = ring_dir.clone();
+            move || run_ring(&ring_dir, keep, chunk_duration, tick, &stop)
+        });
+
+        wait_for_first_chunk(&ring_dir);
+        // The thread is confirmed running; this long past chunk_duration
+        // (60ms) gives room for several more rotations regardless of
+        // how slow the first one was to start.
+        std::thread::sleep(Duration::from_millis(500));
+        stop_writer.store(true, Ordering::Relaxed);
+        handle.join().unwrap().unwrap();
+
+        let chunks: Vec<_> = fs::read_dir(&ring_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "swr"))
+            .collect();
+        assert!(
+            !chunks.is_empty(),
+            "expected at least one chunk file after running"
+        );
+        // With a 400ms run and a 60ms chunk_duration, several rotations
+        // should have happened; a 150ms keep window should have pruned
+        // at least the earliest ones rather than keeping all of them.
+        assert!(
+            chunks.len() < 6,
+            "expected pruning to have removed some chunks, found {}",
+            chunks.len()
+        );
+
+        // Every surviving chunk must be a valid, readable recording --
+        // pruning or an interrupted rotation must never leave behind a
+        // file that looks like a chunk but isn't one.
+        for entry in &chunks {
+            let snaps = read(&entry.path()).unwrap();
+            assert!(
+                !snaps.is_empty(),
+                "{:?} decoded to zero snapshots",
+                entry.path()
+            );
+        }
+    }
+
+    #[test]
+    fn ring_recorder_flushes_the_final_partial_chunk_on_stop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ring_dir = dir.path().to_path_buf();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_writer = Arc::clone(&stop);
+
+        // Chunk duration longer than the whole run, so everything ends
+        // up buffered in one Recorder's pending block -- stopping must
+        // still flush it rather than leaving an empty or truncated file.
+        let handle = std::thread::spawn({
+            let ring_dir = ring_dir.clone();
+            move || {
+                run_ring(
+                    &ring_dir,
+                    Duration::from_secs(3600),
+                    Duration::from_secs(3600),
+                    Duration::from_millis(15),
+                    &stop,
+                )
+            }
+        });
+
+        wait_for_first_chunk(&ring_dir);
+        // A few more ticks (15ms each) so the chunk holds more than
+        // just whatever the very first sample produced.
+        std::thread::sleep(Duration::from_millis(100));
+        stop_writer.store(true, Ordering::Relaxed);
+        handle.join().unwrap().unwrap();
+
+        let chunks: Vec<_> = fs::read_dir(&ring_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "swr"))
+            .collect();
+        assert_eq!(chunks.len(), 1);
+        let snaps = read(&chunks[0].path()).unwrap();
+        assert!(!snaps.is_empty(), "final chunk was not flushed on stop");
     }
 }

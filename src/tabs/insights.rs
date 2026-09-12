@@ -255,6 +255,7 @@ fn draw_all_clear(f: &mut Frame, area: Rect) {
             "Insights re-evaluate every tick from the rolling session window.".into(),
         ],
         suggested_tab: crate::app::TabId::Overview,
+        culprit: None,
     };
     draw_card(f, card_rect, &ins);
 }

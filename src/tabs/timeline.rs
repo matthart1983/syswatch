@@ -477,6 +477,7 @@ mod tests {
             title: title.to_string(),
             body: Vec::new(),
             suggested_tab: TabId::Overview,
+            culprit: None,
         }
     }
 

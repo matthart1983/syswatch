@@ -1,16 +1,65 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 mod app;
 mod collect;
 mod config;
 mod insights;
 mod recording;
+mod report;
 mod snapshot;
 mod tabs;
 mod ui;
 
 use config::SyswatchConfig;
+
+/// Non-interactive reports: no TUI, no raw mode, one result to stdout
+/// and exit. `insights` and `why` sample the live host briefly first
+/// (see `report::sample_window`) since the heuristics need a short
+/// window of history, not just one instant.
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Print one live sample and exit.
+    Snapshot {
+        /// Print machine-readable JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Sample the live host, then print whatever insight cards fired
+    /// -- the same heuristics and thresholds the TUI's Insights tab
+    /// uses. Blocks for the sampling window before printing anything.
+    Insights {
+        /// Print machine-readable JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// How long to sample before reporting. A number plus a unit
+        /// (s/m/h/d), e.g. "30s", "2m". The leak detector needs at
+        /// least ~2 minutes of window to ever fire; shorter windows
+        /// still catch the rest.
+        #[arg(long, value_parser = recording::parse_retention, default_value = "30s")]
+        since: std::time::Duration,
+    },
+    /// Compare two points in time: two recordings (last snapshot of
+    /// each), or the first and last snapshot of one.
+    Diff {
+        /// A .swr recording.
+        a: std::path::PathBuf,
+        /// A second recording, to compare its last snapshot against
+        /// `a`'s. Omit to compare `a`'s own first and last snapshot
+        /// instead.
+        b: Option<std::path::PathBuf>,
+        /// Print machine-readable JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Sample the live host, then print a plain-English diagnosis --
+    /// the same cards as `insights`, as prose meant to be read or
+    /// pasted into a ticket, not parsed.
+    Why {
+        #[arg(long, value_parser = recording::parse_retention, default_value = "30s")]
+        since: std::time::Duration,
+    },
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -19,6 +68,9 @@ use config::SyswatchConfig;
     about = "Single-host system diagnostics TUI"
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Fast-loop tick in milliseconds. Overrides the saved config when supplied.
     #[arg(long)]
     tick: Option<u64>,
@@ -61,7 +113,28 @@ struct Cli {
     keep: Option<std::time::Duration>,
 }
 
+/// Restore Unix's traditional "die silently" SIGPIPE behavior. Rust's
+/// runtime sets it to `SIG_IGN` by default, turning a write to a
+/// closed pipe into a recoverable `Err` -- fine for code that checks
+/// every write, wrong for the plain `println!` calls throughout
+/// `report.rs`. Piping `syswatch snapshot --json` into `head` or an
+/// early-exiting `jq` would otherwise print a broken-pipe panic and
+/// backtrace instead of exiting quietly, which is what every other
+/// Unix command line tool does in that situation.
+#[cfg(unix)]
+fn reset_sigpipe() {
+    // SAFETY: SIG_DFL is a valid static disposition constant; this
+    // only changes how the process reacts to SIGPIPE, nothing else.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
+
 fn main() -> Result<()> {
+    reset_sigpipe();
     let cli = Cli::parse();
     let mut cfg = SyswatchConfig::load();
 
@@ -71,6 +144,17 @@ fn main() -> Result<()> {
     if let Some(t) = cli.tick {
         cfg.tick_ms = t;
         cfg.validate();
+    }
+
+    // Non-interactive subcommands short-circuit before any TUI, theme
+    // or tab setup -- none of that applies to a one-shot report.
+    if let Some(command) = cli.command {
+        return match command {
+            Command::Snapshot { json } => report::run_snapshot(json),
+            Command::Insights { json, since } => report::run_insights(json, since, cfg.tick_ms),
+            Command::Diff { a, b, json } => report::run_diff(&a, b.as_deref(), json),
+            Command::Why { since } => report::run_why(since, cfg.tick_ms),
+        };
     }
 
     // --record is a headless mode: no TUI, no theme, no tab -- dispatch

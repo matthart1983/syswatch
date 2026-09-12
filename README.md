@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">SysWatch</h1>
   <p align="center">
-    <strong>Single-host system diagnostics in your terminal. The terminal you open when something feels off — before you reach for htop, iostat, nettop, powermetrics, and a notebook full of one-liners.</strong>
+    <strong>Single-host system diagnostics that remember. Most terminal monitors show you what's happening right now; SysWatch keeps the last ten minutes of every subsystem and tells you why something spiked, in plain English — before you reach for htop, iostat, nettop, powermetrics, and a notebook full of one-liners.</strong>
   </p>
   <p align="center">
     <a href="https://crates.io/crates/syswatch"><img src="https://img.shields.io/crates/v/syswatch.svg" alt="crates.io"></a>
@@ -13,15 +13,7 @@
 </p>
 
 <p align="center">
-  <em>Sibling to <a href="https://github.com/matthart1983/netwatch">NetWatch</a> (network) and <a href="https://github.com/matthart1983/diskwatch">DiskWatch</a> (disk). Same chrome. Same palette. <a href="#dense-view">One dense screen</a> with every subsystem on it, twelve tabs when you want to go deeper, or <a href="#lite-view">one small screen</a> when that's the whole question.</em>
-</p>
-
-<p align="center">
-  <img src="demo-dense.gif" alt="SysWatch Dense: six boxes on one 130×44 screen — a full-height CPU graph over a vitals row, memory composition beside a mirrored network pair, the per-core grid beside disk read/write, and processes sorted by CPU with detail in place; then the process table and the network mirror each zoomed to the full frame" width="900">
-</p>
-
-<p align="center">
-  <strong><a href="#dense-view">Dense</a> — <code>syswatch --dense</code>, or <code>V</code> to cycle.</strong> Every subsystem at once on one 130×44 screen: six boxes, zero chrome rows, braille graphs that encode magnitude as colour, and a mirrored network pair that turns traffic symmetry into a shape. Where <a href="#lite-view">Lite</a> answers <em>"why is this machine hot, slow, or loud?"</em>, Dense answers <em>"what is this machine doing, all of it, at once?"</em>
+  <em>Sibling to <a href="https://github.com/matthart1983/netwatch">NetWatch</a> (network) and <a href="https://github.com/matthart1983/diskwatch">DiskWatch</a> (disk). Same chrome. Same palette. Twelve tabs, a session timeline that scrubs back over what already happened, and anomaly cards that name a culprit rather than a threshold crossed — plus <a href="#dense-view">one dense screen</a> with every subsystem on it, or <a href="#lite-view">one small screen</a> when that's the whole question.</em>
 </p>
 
 <p align="center">
@@ -29,7 +21,15 @@
 </p>
 
 <p align="center">
-  <strong>…and the tour — <code>syswatch</code>, no flags.</strong> Twelve tabs, one per subsystem, for when one screen isn't the whole answer: per-process memory that matches Activity Monitor, measured per-process bandwidth and energy, a session scrubber that rewinds every panel at once, and plain-English anomaly cards.
+  <strong>The tour — <code>syswatch</code>, no flags.</strong> Twelve tabs, one per subsystem: per-process memory that matches Activity Monitor, measured per-process bandwidth and energy, a session scrubber that rewinds every panel at once, and plain-English anomaly cards that name the process behind a spike instead of just flagging that one happened.
+</p>
+
+<p align="center">
+  <img src="demo-dense.gif" alt="SysWatch Dense: six boxes on one 130×44 screen — a full-height CPU graph over a vitals row, memory composition beside a mirrored network pair, the per-core grid beside disk read/write, and processes sorted by CPU with detail in place; then the process table and the network mirror each zoomed to the full frame" width="900">
+</p>
+
+<p align="center">
+  <strong><a href="#dense-view">…and Dense</a> — <code>syswatch --dense</code>, or <code>V</code> to cycle.</strong> When you want the instantaneous view too: every subsystem at once on one 130×44 screen, six boxes, zero chrome rows, braille graphs that encode magnitude as colour, and a mirrored network pair that turns traffic symmetry into a shape.
 </p>
 
 ---
@@ -113,7 +113,7 @@ q / Ctrl-C          →  Quit
 ### Dense view
 
 `syswatch --dense`, or `V` to cycle Full → Lite → Dense. Every subsystem on one
-130×44 screen — the GIF at the top of this page. Where [Lite](#lite-view) is the
+130×44 screen — the second GIF on this page. Where [Lite](#lite-view) is the
 smallest useful thing, Dense is the largest: six boxes tiling the terminal with
 **zero chrome rows** — no header, no tab bar, no status bar. Identity, uptime,
 aggregate, sort state, page range and every keybind live inside the box borders,

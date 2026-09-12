@@ -70,9 +70,15 @@ nvml-wrapper = { version = "0.12", optional = true }
 # so target-gating means it's silently absent everywhere else.
 [target.'cfg(target_os = "macos")'.dependencies]
 macpow = { version = "0.1", default-features = false }
-# Used only for an in-process `getifaddrs` interface up/down flag read in the
-# net collector — cheaper than shelling out to `ifconfig` per interface (see
-# issue #4). Already in the build graph transitively via sysinfo/macpow.
+
+# Two uses: macOS-only process/memory/network syscalls in
+# collect/collector.rs and collect/proc_memory.rs (each already gated
+# `#[cfg(target_os = "macos")]` at the call site, so this dependency
+# gate is belt-and-suspenders there, not load-bearing), and the
+# SIGPIPE reset in main.rs, which is genuinely cross-platform Unix,
+# not macOS-specific -- hence `cfg(unix)` rather than narrowing to
+# macOS like `macpow` above.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]

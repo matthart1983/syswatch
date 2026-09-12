@@ -10,7 +10,8 @@ use std::time::Duration;
 use crate::app::{History, TabId};
 use crate::collect::Snapshot;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum Severity {
     Info,
     Warn,
@@ -27,7 +28,7 @@ impl Severity {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Insight {
     pub severity: Severity,
     pub title: String,

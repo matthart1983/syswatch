@@ -214,6 +214,18 @@ For recording without sitting at the terminal, `syswatch --record --keep 24h` ru
 
 **Honest about platform limits.** Where data needs sudo (`powermetrics` for fans, per-component power, GPU util on Apple Silicon) the tab shows what we *can* get for free and a one-line note about what's gated. Nothing is faked, nothing prompts.
 
+**Non-interactive reports.** Four subcommands print a result and exit -- no TUI, no raw mode, safe to pipe into `jq` or drop into a script:
+
+```bash
+syswatch snapshot --json              # one live sample, full structure
+syswatch insights --since 30s --json  # sample briefly, print whatever fired
+syswatch why                          # same cards, as prose for a ticket
+syswatch diff before.swr after.swr    # per-subsystem deltas + process changes
+syswatch diff session.swr             # first vs last snapshot of one recording
+```
+
+`insights` and `why` sample the live host for `--since` (default 30s) before printing -- there's no background collector to ask for instant history, so both take as long as the window they're given. Longer catches slower heuristics (the memory-leak detector needs a couple of minutes of sustained growth to ever fire); the default is enough for the rest. `--json` on `snapshot`, `insights` and `diff` serializes the exact same `Snapshot` and `Insight` types the TUI itself renders, so a script sees what the tabs show, not a separate reporting-only shape.
+
 ## Anti-goals
 
 - **Not multi-host.** For fleet view, use NetWatch's web dashboard.
@@ -224,7 +236,7 @@ For recording without sitting at the terminal, `syswatch --record --keep 24h` ru
 
 ## Scope
 
-All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), unattended recording (`--record` / `--keep`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), the Dense view (`V` / `--dense`), and the graph-fade rendering are all live.
+All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), unattended recording (`--record` / `--keep`), non-interactive reports (`snapshot` / `insights` / `diff` / `why`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), the Dense view (`V` / `--dense`), and the graph-fade rendering are all live.
 
 Lite's temp / fan / power vitals depend on platform sensors: Linux reads `/sys/class/hwmon`, `/sys/class/thermal` and RAPL; macOS needs IOKit/SMC access, so on Apple Silicon those three commonly render `--` while CPU, memory, disk and processes remain fully live.
 

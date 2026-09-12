@@ -5,6 +5,7 @@
 //!
 //! Read-only by design — Insights surface what to look at, never mutate.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::app::{History, TabId};
@@ -34,6 +35,11 @@ pub struct Insight {
     pub title: String,
     pub body: Vec<String>,
     pub suggested_tab: TabId,
+    /// The process name most responsible for this card, when one is
+    /// identifiable -- used by `correlate_shared_culprits` to notice
+    /// when the same process is implicated by two or more
+    /// independently-fired cards in the same `compute()` call.
+    pub culprit: Option<String>,
 }
 
 const MIB: u64 = 1024 * 1024;
@@ -101,11 +107,135 @@ pub fn compute(h: &History, snap: &Snapshot) -> Vec<Insight> {
     if let Some(i) = insight_mem_leak(h, snap) {
         out.push(i);
     }
+    if let Some(i) = insight_cpu_baseline_deviation(h) {
+        out.push(i);
+    }
+
+    // Correlation runs over whatever fired above, so it sees exactly
+    // what a user reading the cards would -- computed before the
+    // sort/truncate below so a correlated card competes for one of
+    // the ~6 slots on equal footing with the individual symptoms it's
+    // built from, rather than being tacked on regardless of severity.
+    let correlated = correlate_shared_culprits(&out);
+    out.extend(correlated);
 
     // Most severe first; cap to the spec's ~6 cards budget.
     out.sort_by(|a, b| b.severity.cmp(&a.severity));
     out.truncate(6);
     out
+}
+
+/// When the same process is named as the culprit behind two or more
+/// independently-fired cards, that's a stronger and more actionable
+/// signal than either alone -- a process driving both a swap thrash
+/// and a CPU runaway warning is very likely the actual root cause,
+/// not two unrelated coincidences the user has to notice share a name
+/// themselves. Synthesizes one additional Crit card per process
+/// implicated in 2+ of the cards already fired this `compute()` call,
+/// naming which symptoms. Order is deterministic (`BTreeMap`, sorted
+/// by process name) so which correlated card appears first is stable
+/// across runs when severities tie.
+fn correlate_shared_culprits(cards: &[Insight]) -> Vec<Insight> {
+    let mut by_culprit: BTreeMap<&str, Vec<&Insight>> = BTreeMap::new();
+    for c in cards {
+        if let Some(name) = c.culprit.as_deref() {
+            by_culprit.entry(name).or_default().push(c);
+        }
+    }
+    by_culprit
+        .into_iter()
+        .filter(|(_, group)| group.len() >= 2)
+        .map(|(name, group)| {
+            let symptoms: Vec<String> = group.iter().map(|c| c.title.clone()).collect();
+            Insight {
+                severity: Severity::Crit,
+                title: format!(
+                    "{name} looks like the common thread behind {} of the cards above",
+                    group.len()
+                ),
+                body: symptoms,
+                suggested_tab: group[0].suggested_tab,
+                culprit: Some(name.to_string()),
+            }
+        })
+        .collect()
+}
+
+/// Minimum session samples before a baseline is trusted enough to
+/// judge deviation from -- otherwise the first minute of any session
+/// would look like a huge deviation from a near-empty "baseline" of
+/// just itself.
+const BASELINE_MIN_SAMPLES: usize = 60;
+
+/// CPU usage far outside what's normal for *this* machine, rather
+/// than an absolute threshold like `insight_high_load`'s. A server
+/// that idles at 40% and a desktop that idles at 2% have different
+/// definitions of "busy" -- this looks at how many standard
+/// deviations the current value sits from the session's own rolling
+/// mean (a z-score), so a genuine anomaly is caught on both without a
+/// fixed number ever being right for either.
+fn insight_cpu_baseline_deviation(h: &History) -> Option<Insight> {
+    let history = h.cpu.to_vec();
+    if history.len() < BASELINE_MIN_SAMPLES {
+        return None;
+    }
+    // Judge the last few samples against everything before them, not
+    // against a baseline that includes them -- a sustained spike would
+    // otherwise slowly pull the mean toward itself and eventually stop
+    // looking anomalous.
+    let recent_n = 5.min(history.len() - BASELINE_MIN_SAMPLES + 1).max(1);
+    let (baseline, recent) = history.split_at(history.len() - recent_n);
+    let mean = baseline.iter().map(|&v| v as f64).sum::<f64>() / baseline.len() as f64;
+    let variance = baseline
+        .iter()
+        .map(|&v| {
+            let d = v as f64 - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / baseline.len() as f64;
+    let stddev = variance.sqrt();
+    let current = recent.iter().map(|&v| v as f64).sum::<f64>() / recent.len() as f64;
+
+    // A near-flat baseline (stddev under one percentage point) would
+    // make any small absolute wobble register as an enormous z-score
+    // -- floor it so a machine that's genuinely always idle doesn't
+    // fire on trivial noise.
+    let effective_stddev = stddev.max(1.0);
+    let z = (current - mean) / effective_stddev;
+
+    // Only the high side is interesting -- CPU dropping far below
+    // baseline isn't a problem worth a card.
+    let severity = if z >= 6.0 {
+        Severity::Crit
+    } else if z >= 4.0 {
+        Severity::Warn
+    } else {
+        return None;
+    };
+    // An absolute floor too: 4 standard deviations above a baseline of
+    // "2% usage, stddev 1pp" is still only ~6% CPU -- technically a
+    // big multiple of nothing, not actually worth a card.
+    if current < 15.0 {
+        return None;
+    }
+
+    Some(Insight {
+        severity,
+        title: format!(
+            "CPU at {:.0}% is unusual for this machine (normally {:.0}% \u{b1} {:.0}pp)",
+            current, mean, stddev
+        ),
+        body: vec![
+            format!(
+                "{:.1} standard deviations above this session's own baseline.",
+                z
+            ),
+            "Baseline is this session's rolling average, not a fixed threshold -- a server that's always busy won't trip this just for being busy.".into(),
+        ],
+        suggested_tab: TabId::Cpu,
+        culprit: None,
+    })
 }
 
 /// Swap usage growing meaningfully over the rolling window.
@@ -150,31 +280,48 @@ fn insight_swap_thrash(h: &History, snap: &Snapshot) -> Option<Insight> {
     // Name the most useful culprit the data can support: the biggest
     // per-process swap holder when the sampler has it (the actual
     // thrash driver), else the largest honest memory holder
-    // (footprint / PSS), else RSS as the last resort.
-    let culprit = snap
+    // (footprint / PSS), else RSS as the last resort. Carries the bare
+    // process name alongside the prose sentence so `compute()` can
+    // correlate this card against others naming the same process,
+    // without parsing it back out of the sentence.
+    let (culprit_name, culprit_prose) = snap
         .procs
         .iter()
         .filter_map(|p| p.mem_swap.map(|s| (p, s)))
         .filter(|(_, s)| *s > 0)
         .max_by_key(|(_, s)| *s)
-        .map(|(p, s)| format!("{} holds the most swap ({}).", p.name, fmt_bytes(s)))
+        .map(|(p, s)| {
+            (
+                p.name.clone(),
+                format!("{} holds the most swap ({}).", p.name, fmt_bytes(s)),
+            )
+        })
         .or_else(|| {
             snap.procs
                 .iter()
                 .filter_map(|p| p.mem_footprint.or(p.mem_pss).map(|m| (p, m)))
                 .max_by_key(|(_, m)| *m)
-                .map(|(p, m)| format!("{} holds the largest footprint ({}).", p.name, fmt_bytes(m)))
+                .map(|(p, m)| {
+                    (
+                        p.name.clone(),
+                        format!("{} holds the largest footprint ({}).", p.name, fmt_bytes(m)),
+                    )
+                })
         })
         .or_else(|| {
             snap.procs.iter().max_by_key(|p| p.mem_rss).map(|p| {
-                format!(
-                    "{} holds the largest resident set ({}).",
-                    p.name,
-                    fmt_bytes(p.mem_rss)
+                (
+                    p.name.clone(),
+                    format!(
+                        "{} holds the largest resident set ({}).",
+                        p.name,
+                        fmt_bytes(p.mem_rss)
+                    ),
                 )
             })
         })
-        .unwrap_or_default();
+        .map(|(name, prose)| (Some(name), prose))
+        .unwrap_or((None, String::new()));
 
     Some(Insight {
         severity,
@@ -185,9 +332,10 @@ fn insight_swap_thrash(h: &History, snap: &Snapshot) -> Option<Insight> {
                 fmt_bytes(snap.mem.swap_used_bytes),
                 fmt_bytes(snap.mem.swap_total_bytes.max(1))
             ),
-            culprit,
+            culprit_prose,
         ],
         suggested_tab: TabId::Memory,
+        culprit: culprit_name,
     })
 }
 
@@ -224,6 +372,7 @@ fn insight_runaway_proc(h: &History, snap: &Snapshot) -> Option<Insight> {
             format!("user {} / ppid {}", proc_.user, proc_.ppid),
         ],
         suggested_tab: TabId::Procs,
+        culprit: Some(proc_.name.clone()),
     })
 }
 
@@ -275,6 +424,7 @@ fn insight_disk_full(snap: &Snapshot) -> Option<Insight> {
             },
         ],
         suggested_tab: TabId::Fs,
+        culprit: None,
     })
 }
 
@@ -315,6 +465,7 @@ fn insight_memory_pressure(h: &History, snap: &Snapshot) -> Option<Insight> {
             "Sustained high pressure typically precedes swap activity or OOM kills.".into(),
         ],
         suggested_tab: TabId::Memory,
+        culprit: None,
     })
 }
 
@@ -351,6 +502,7 @@ fn insight_high_load(snap: &Snapshot) -> Option<Insight> {
             "Sustained load above 2× cores indicates a queue forming on the run queue.".into(),
         ],
         suggested_tab: TabId::Cpu,
+        culprit: None,
     })
 }
 
@@ -389,6 +541,7 @@ fn insight_zombie_party(snap: &Snapshot) -> Option<Insight> {
                 .into(),
         ],
         suggested_tab: TabId::Procs,
+        culprit: None,
     })
 }
 
@@ -438,6 +591,7 @@ fn insight_gpu_pegged(h: &History, snap: &Snapshot) -> Option<Insight> {
                 .into(),
         ],
         suggested_tab: TabId::Gpu,
+        culprit: None,
     })
 }
 
@@ -476,6 +630,7 @@ fn insight_vram_high(snap: &Snapshot) -> Option<Insight> {
             "Close other GPU clients or reduce model/batch sizes.".into(),
         ],
         suggested_tab: TabId::Gpu,
+        culprit: None,
     })
 }
 
@@ -507,6 +662,7 @@ fn insight_psi_memory(snap: &Snapshot) -> Option<Insight> {
             ),
         ],
         suggested_tab: TabId::Memory,
+        culprit: None,
     })
 }
 
@@ -521,8 +677,10 @@ fn insight_psi_io(snap: &Snapshot) -> Option<Insight> {
     } else {
         return None;
     };
-    // Name the heaviest IO process to make the card actionable.
-    let top_io = snap
+    // Name the heaviest IO process to make the card actionable. Carries
+    // the bare name alongside the prose so `compute()` can correlate
+    // this card against others naming the same process.
+    let (top_io_name, top_io) = snap
         .procs
         .iter()
         .max_by(|a, b| {
@@ -532,14 +690,17 @@ fn insight_psi_io(snap: &Snapshot) -> Option<Insight> {
         })
         .filter(|p| p.io_read_rate + p.io_write_rate > 0.0)
         .map(|p| {
-            format!(
-                "{} is the heaviest IO proc ({} read / {} write).",
-                p.name,
-                crate::ui::widgets::human_rate(p.io_read_rate),
-                crate::ui::widgets::human_rate(p.io_write_rate)
+            (
+                Some(p.name.clone()),
+                format!(
+                    "{} is the heaviest IO proc ({} read / {} write).",
+                    p.name,
+                    crate::ui::widgets::human_rate(p.io_read_rate),
+                    crate::ui::widgets::human_rate(p.io_write_rate)
+                ),
             )
         })
-        .unwrap_or_else(|| "no single process dominates the visible IO.".into());
+        .unwrap_or_else(|| (None, "no single process dominates the visible IO.".into()));
     Some(Insight {
         severity,
         title: format!(
@@ -548,6 +709,7 @@ fn insight_psi_io(snap: &Snapshot) -> Option<Insight> {
         ),
         body: vec!["PSI avg10 from /proc/pressure/io.".into(), top_io],
         suggested_tab: TabId::Disks,
+        culprit: top_io_name,
     })
 }
 
@@ -582,6 +744,7 @@ fn insight_energy_hog(h: &History, snap: &Snapshot) -> Option<Insight> {
             "Estimate: measured CPU-rail power (IOReport) split by CPU share.".into(),
         ],
         suggested_tab: TabId::Power,
+        culprit: Some(proc_.name.clone()),
     })
 }
 
@@ -625,6 +788,7 @@ fn insight_mem_leak(h: &History, snap: &Snapshot) -> Option<Insight> {
             "Sustained private-memory growth without plateau is the classic leak signature.".into(),
         ],
         suggested_tab: TabId::Memory,
+        culprit: Some(proc_.name.clone()),
     })
 }
 
@@ -1215,6 +1379,172 @@ mod tests {
             ..Default::default()
         };
         assert!(first_with(&compute(&h, &last), "possible leak").is_none());
+    }
+
+    // ── cpu_baseline_deviation ───────────────────────────────────────────
+
+    fn cpu_snap(usage_pct: f32) -> Snapshot {
+        Snapshot {
+            cpu: crate::collect::CpuTick {
+                usage_pct,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn push_stable_cpu(h: &mut History, n: usize, usage_pct: f32) {
+        for _ in 0..n {
+            h.push(&cpu_snap(usage_pct));
+        }
+    }
+
+    /// Alternates `mean - spread` / `mean + spread` rather than one
+    /// constant value -- a real machine's CPU usage always jitters at
+    /// least a little, and a perfectly flat synthetic baseline gives a
+    /// stddev of exactly zero, which the insight's noise floor then
+    /// treats identically to genuine idle noise regardless of the
+    /// baseline's absolute level. A test built on a zero-variance
+    /// baseline can't actually distinguish "busy but stable" from
+    /// "idle but stable" -- both look like z=huge for the same
+    /// absolute step, which isn't the behavior being tested for.
+    fn push_jittery_cpu(h: &mut History, n: usize, mean: f32, spread: f32) {
+        for i in 0..n {
+            let v = if i % 2 == 0 {
+                mean - spread
+            } else {
+                mean + spread
+            };
+            h.push(&cpu_snap(v));
+        }
+    }
+
+    #[test]
+    fn cpu_baseline_does_not_fire_with_too_little_history() {
+        let mut h = empty_history();
+        // One short of BASELINE_MIN_SAMPLES -- even an extreme spike
+        // shouldn't fire without enough of a baseline to judge it against.
+        push_stable_cpu(&mut h, 58, 2.0);
+        h.push(&cpu_snap(99.0));
+        let last = cpu_snap(99.0);
+        assert!(first_with(&compute(&h, &last), "unusual for this machine").is_none());
+    }
+
+    #[test]
+    fn cpu_baseline_fires_on_a_large_spike_after_a_stable_low_baseline() {
+        let mut h = empty_history();
+        // A desktop-like baseline: consistently near-idle.
+        push_stable_cpu(&mut h, 90, 2.0);
+        push_stable_cpu(&mut h, 5, 60.0);
+        let last = cpu_snap(60.0);
+        let result = compute(&h, &last);
+        let ins = first_with(&result, "unusual for this machine")
+            .expect("a large spike off a stable low baseline should fire");
+        assert_eq!(ins.suggested_tab, TabId::Cpu);
+    }
+
+    #[test]
+    fn cpu_baseline_does_not_fire_for_a_machine_that_is_normally_busy() {
+        // A server-like baseline: consistently busy. The same 60%
+        // absolute value that fires against a 2%-idle baseline must
+        // NOT fire here -- the whole point of a baseline over a fixed
+        // threshold.
+        let mut h = empty_history();
+        push_jittery_cpu(&mut h, 90, 55.0, 5.0);
+        push_stable_cpu(&mut h, 5, 60.0);
+        let last = cpu_snap(60.0);
+        assert!(first_with(&compute(&h, &last), "unusual for this machine").is_none());
+    }
+
+    #[test]
+    fn cpu_baseline_ignores_trivial_noise_around_a_near_zero_baseline() {
+        // A near-flat baseline floors its effective stddev so a tiny
+        // absolute wobble (here, 2% -> 8%) doesn't register as a huge
+        // z-score purely because the raw stddev is near zero.
+        let mut h = empty_history();
+        push_stable_cpu(&mut h, 90, 2.0);
+        push_stable_cpu(&mut h, 5, 8.0);
+        let last = cpu_snap(8.0);
+        assert!(first_with(&compute(&h, &last), "unusual for this machine").is_none());
+    }
+
+    // ── correlate_shared_culprits ────────────────────────────────────────
+
+    #[test]
+    fn correlation_fires_when_one_process_drives_two_symptoms() {
+        // A single process both hogging CPU (runaway_proc) and holding
+        // the most swap (swap_thrash's culprit) should surface one
+        // additional card naming it as the common thread.
+        let mut h = empty_history();
+        for _ in 0..30 {
+            h.push(&snap(mem(0, 16 * GIB, 100 * MIB, 4 * GIB), vec![], vec![]));
+        }
+        let hog = proc(42, "leaky-hog", 95.0, 0, 'R');
+        let mut hog_with_swap = hog.clone();
+        hog_with_swap.mem_swap = Some(700 * MIB);
+        h.push(&snap(
+            mem(15 * GIB, 16 * GIB, 700 * MIB, 4 * GIB),
+            vec![hog_with_swap.clone()],
+            vec![],
+        ));
+        let mut ewma = std::collections::HashMap::new();
+        ewma.insert(42u32, 95.0);
+        h.proc_cpu_ewma = ewma;
+        let s = snap(
+            mem(15 * GIB, 16 * GIB, 700 * MIB, 4 * GIB),
+            vec![hog_with_swap],
+            vec![],
+        );
+        let result = compute(&h, &s);
+        assert!(first_with(&result, "runaway process").is_some());
+        assert!(first_with(&result, "swap thrash").is_some());
+        let correlated = first_with(&result, "common thread")
+            .expect("shared culprit across two cards should produce a correlation card");
+        assert_eq!(correlated.culprit.as_deref(), Some("leaky-hog"));
+        assert_eq!(correlated.severity, Severity::Crit);
+    }
+
+    #[test]
+    fn correlate_shared_culprits_ignores_a_culprit_named_only_once() {
+        let cards = vec![Insight {
+            severity: Severity::Warn,
+            title: "solo".into(),
+            body: vec![],
+            suggested_tab: TabId::Procs,
+            culprit: Some("lonely-proc".into()),
+        }];
+        assert!(correlate_shared_culprits(&cards).is_empty());
+    }
+
+    #[test]
+    fn correlate_shared_culprits_groups_by_exact_name() {
+        let cards = vec![
+            Insight {
+                severity: Severity::Warn,
+                title: "a".into(),
+                body: vec![],
+                suggested_tab: TabId::Procs,
+                culprit: Some("shared".into()),
+            },
+            Insight {
+                severity: Severity::Crit,
+                title: "b".into(),
+                body: vec![],
+                suggested_tab: TabId::Memory,
+                culprit: Some("shared".into()),
+            },
+            Insight {
+                severity: Severity::Info,
+                title: "c".into(),
+                body: vec![],
+                suggested_tab: TabId::Gpu,
+                culprit: Some("other".into()),
+            },
+        ];
+        let correlated = correlate_shared_culprits(&cards);
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].culprit.as_deref(), Some("shared"));
+        assert_eq!(correlated[0].body, vec!["a".to_string(), "b".to_string()]);
     }
 
     // ── compute() ordering / capping ──────────────────────────────────────

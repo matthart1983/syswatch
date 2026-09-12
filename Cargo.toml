@@ -56,6 +56,10 @@ postcard = { version = "1", features = ["use-std"] }
 # delta encoding in recording.rs — general-purpose compression still helps
 # once the identity/volatile split has removed the biggest redundancy.
 zstd = "0.14"
+# Clean Ctrl-C/SIGTERM handling for `syswatch --record`, so an
+# unattended recording flushes its current chunk instead of losing it
+# to an abrupt kill (Rust doesn't unwind on signal delivery).
+ctrlc = "3"
 
 # Linux NVIDIA support is opt-in: enabling `gpu-nvidia` links libnvidia-ml,
 # which only ships on hosts with the proprietary driver installed.

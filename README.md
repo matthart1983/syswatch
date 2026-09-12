@@ -85,6 +85,7 @@ syswatch --lite                # the one-screen Lite view
 syswatch --tick 500            # 2Hz
 syswatch --tab procs           # boot straight into a tab
 syswatch --replay session.swr  # scrub a recorded session
+syswatch --record --keep 24h   # unattended recording, no TUI (see below)
 ```
 
 ### Keys
@@ -209,19 +210,21 @@ as the rest of syswatch.
 
 **Live scrubbing, full-session recording.** The Timeline tab's `←/→` rewinds every panel at once over the last 120 samples it keeps live — two minutes at the default 1 Hz tick, less at a faster one. For anything longer, `R` records the whole session to a `.swr` file as it runs; `--replay` scrubs that back afterward with no length limit, and `S` dumps the current snapshot to disk.
 
+For recording without sitting at the terminal, `syswatch --record --keep 24h` runs headless (no TUI) and writes rotating hourly chunk files, pruning anything older than `--keep` (`30m` / `24h` / `7d` — any number plus s/m/h/d) as new ones are written. It's a plain foreground process — run it under `nohup`, a terminal multiplexer, or a user-level systemd/launchd unit if you want it to outlive your session; syswatch doesn't install anything or listen on the network on its own. `Ctrl-C` flushes the current chunk and exits cleanly. Recordings from `--record` land in a separate directory from `R`'s interactive ones, so an unattended run and a manual one you're keeping on purpose never collide or get pruned into each other.
+
 **Honest about platform limits.** Where data needs sudo (`powermetrics` for fans, per-component power, GPU util on Apple Silicon) the tab shows what we *can* get for free and a one-line note about what's gated. Nothing is faked, nothing prompts.
 
 ## Anti-goals
 
 - **Not multi-host.** For fleet view, use NetWatch's web dashboard.
-- **Not a daemon.** No long-running collector, no Prometheus push. The session is the database.
+- **No privileged daemon, no network exposure.** `--record --keep` can run for as long as you leave it, but it's a plain foreground process you start -- nothing gets installed, nothing listens on the network, no Prometheus endpoint. A recording is a file, not a database with a query API.
 - **Not interactive remediation.** Read-only, deliberately. We don't kill, renice, unmount, or restart.
 - **Not a logging product.** We surface OOM kills as a *signal* in Memory; we are not a log search UI.
 - **Not pretty charts for screenshots.** Block sparklines, real numbers, no smooth curves, no themes-of-the-week.
 
 ## Scope
 
-All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), the Dense view (`V` / `--dense`), and the graph-fade rendering are all live.
+All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), unattended recording (`--record` / `--keep`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), the Dense view (`V` / `--dense`), and the graph-fade rendering are all live.
 
 Lite's temp / fan / power vitals depend on platform sensors: Linux reads `/sys/class/hwmon`, `/sys/class/thermal` and RAPL; macOS needs IOKit/SMC access, so on Apple Silicon those three commonly render `--` while CPU, memory, disk and processes remain fully live.
 

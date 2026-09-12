@@ -1,7 +1,8 @@
 use std::io;
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -30,14 +31,26 @@ pub struct Options {
     /// Source of truth for tick_ms / theme / graph_style / default_tab.
     /// CLI overrides are applied to this struct in main() before handoff.
     pub config: SyswatchConfig,
-    /// Pre-loaded snapshots from a `--replay` invocation. When Some,
-    /// the run loop skips live collection entirely and the user
-    /// scrubs through the recorded ticks instead.
-    pub replay: Option<Vec<Snapshot>>,
+    /// A `--replay` invocation. When Some, the run loop skips live
+    /// collection entirely and the user scrubs through the recorded
+    /// ticks instead. `total` is a cheap pre-count (`recording::count`)
+    /// so `History`'s rings can be sized correctly up front without
+    /// ever materializing the whole recording into a `Vec<Snapshot>` --
+    /// `run()` streams it tick by tick from `recording::RecordingReader`
+    /// straight into `History::push`.
+    pub replay: Option<ReplaySource>,
     /// Start in the Lite view (`--lite`). Opt-in only.
     pub lite: bool,
     /// Start in the Dense view. Overrides `view` in config.toml for this run.
     pub dense: bool,
+}
+
+/// A `--replay` target: the recording's path plus a cheap pre-count of
+/// how many ticks it holds, so the caller can size `History`'s rings
+/// before streaming the file in.
+pub struct ReplaySource {
+    pub path: PathBuf,
+    pub total: usize,
 }
 
 /// Number of CPU-usage samples kept per process for the inline Procs sparkline.
@@ -1261,27 +1274,42 @@ pub fn run(opts: Options) -> Result<()> {
         app.view_mode = ViewMode::Dense;
     }
 
-    // Populate History from the recording up front, then plant the
-    // scrubber at oldest tick so the user sees the start. Live
-    // collection is skipped entirely in replay mode.
-    if let Some(snaps) = opts.replay {
+    // Stream the recording straight into History, one tick at a time,
+    // rather than collecting it into a `Vec<Snapshot>` first and then
+    // cloning every entry again on the way into the rings -- with a
+    // known `total` (a cheap pre-count from the caller) the rings are
+    // sized correctly up front, so there's still no eviction of the
+    // recording's head, just without ever holding two full copies of
+    // it in memory at once. Live collection is skipped entirely in
+    // replay mode.
+    if let Some(source) = opts.replay {
         app.replay_mode = true;
         // Resize the History rings if needed so the entire recording
         // fits — default cap is 120 ticks; sessions longer than that
         // would otherwise lose the head on push.
-        let needed = snaps.len().max(120);
+        let needed = source.total.max(120);
         app.history = History::new(needed);
-        for s in &snaps {
-            app.history.push(s);
+        match crate::recording::RecordingReader::open(&source.path) {
+            Ok(reader) => {
+                for s in reader {
+                    app.history.push(&s);
+                }
+            }
+            Err(e) => {
+                // Header-level errors (bad magic, wrong version) surface
+                // here rather than at the earlier count() call if the
+                // file changed between the two -- vanishingly unlikely,
+                // but fail loudly rather than silently replaying nothing.
+                return Err(e).context("re-opening recording for replay");
+            }
         }
         // Park scrubber at the oldest tick so the user explores
         // forward through the recording.
         app.scrub_offset = app.history.session.len().saturating_sub(1);
-        app.snap = snaps.last().cloned();
-        app.insights = if let Some(last) = snaps.last() {
-            insights::compute(&app.history, last)
-        } else {
-            Vec::new()
+        app.snap = app.history.session.nth_back(0).cloned();
+        app.insights = match app.history.session.nth_back(0) {
+            Some(last) => insights::compute(&app.history, last),
+            None => Vec::new(),
         };
     }
 

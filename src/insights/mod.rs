@@ -45,26 +45,35 @@ pub struct Insight {
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * 1024 * 1024;
 
-/// Real elapsed time between `snap` (the current tick) and the sample at
-/// `baseline_idx` in the *oldest-to-newest* ordering a caller already used
-/// to pull a metric's own baseline value out of e.g. `h.swap.to_vec()`.
+/// Real elapsed time between `snap` (the current tick) and the sample
+/// `n_back` ticks before it, counting back from the newest (0 = `snap`'s
+/// own tick).
 ///
-/// `h.session` is pushed in lockstep with every other per-tick ring (same
-/// `History::push` call, same length always), so the same index lines up
-/// exactly -- read here by reference via `nth_back` rather than cloning the
-/// ring, since each entry is a full `Snapshot` including every process's
-/// name and command line. Reads the actual recorded timestamps rather than
+/// Callers pick their baseline out of a metric series (`h.swap.to_vec()`,
+/// `h.mem.to_vec()`, ...) and so hold an index into *that* ring; they must
+/// convert it to a distance from the newest sample before calling. The
+/// session ring and the metric series are pushed in lockstep but are
+/// deliberately different lengths -- `History::new` caps `session` at `cap`
+/// while every metric series gets `cap.max(SERIES_CAP)`, because a
+/// `Snapshot` costs upwards of 100 KB apiece. A raw series index passed in
+/// here would address the wrong end of the session ring.
+///
+/// Read by reference via `nth_back` rather than cloning the ring, for that
+/// same size reason. Reads the actual recorded timestamps rather than
 /// assuming every tick took the configured interval, so the reported
 /// window stays honest across a live tick-rate change or a replay recorded
 /// at a different rate than it was captured at.
-fn elapsed_secs_since(h: &History, snap: &Snapshot, baseline_idx: usize) -> u64 {
+///
+/// When the window reaches further back than the session ring still
+/// retains, the oldest retained sample answers instead: a window shorter
+/// than the truth, but a real measured one rather than a nonsensical 0.
+fn elapsed_secs_since(h: &History, snap: &Snapshot, n_back: usize) -> u64 {
     let len = h.session.len();
     if len == 0 {
         return 0;
     }
-    let n = len.saturating_sub(1).saturating_sub(baseline_idx);
     h.session
-        .nth_back(n)
+        .nth_back(n_back.min(len - 1))
         .map(|old| snap.t.duration_since(old.t).unwrap_or_default().as_secs())
         .unwrap_or(0)
 }
@@ -252,7 +261,7 @@ fn insight_swap_thrash(h: &History, snap: &Snapshot) -> Option<Insight> {
     let baseline_idx = history.len().saturating_sub(30);
     let baseline = history[baseline_idx];
     let growth = now.saturating_sub(baseline);
-    let elapsed_secs = elapsed_secs_since(h, snap, baseline_idx);
+    let elapsed_secs = elapsed_secs_since(h, snap, history.len() - 1 - baseline_idx);
 
     let (severity, title) = if growth >= 512 * MIB {
         (
@@ -447,7 +456,7 @@ fn insight_memory_pressure(h: &History, snap: &Snapshot) -> Option<Insight> {
     } else {
         return None;
     };
-    let elapsed_secs = elapsed_secs_since(h, snap, baseline_idx);
+    let elapsed_secs = elapsed_secs_since(h, snap, last_n - 1);
     Some(Insight {
         severity,
         title: format!(
@@ -570,8 +579,7 @@ fn insight_gpu_pegged(h: &History, snap: &Snapshot) -> Option<Insight> {
     } else {
         return None;
     };
-    let baseline_idx = recent.len() - last_n;
-    let elapsed_secs = elapsed_secs_since(h, snap, baseline_idx);
+    let elapsed_secs = elapsed_secs_since(h, snap, last_n - 1);
     let busiest = snap
         .gpus
         .iter()
@@ -918,6 +926,34 @@ mod tests {
         let result = compute(&h, &s);
         let ins = first_with(&result, "swap").expect("swap insight expected");
         assert_eq!(ins.severity, Severity::Crit);
+    }
+
+    #[test]
+    fn swap_thrash_window_stays_real_after_session_eviction() {
+        // Regression: the card used to read "in last 0s" once the swap series
+        // outgrew the session ring -- minutes into any live run.
+        let mut h = History::new(10);
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        for i in 0..60u64 {
+            h.push(&Snapshot {
+                t: t0 + Duration::from_secs(i),
+                mem: mem(0, 16 * GIB, 100 * MIB, 4 * GIB),
+                ..Default::default()
+            });
+        }
+        let s = Snapshot {
+            t: t0 + Duration::from_secs(60),
+            mem: mem(0, 16 * GIB, 700 * MIB, 4 * GIB),
+            ..Default::default()
+        };
+        h.push(&s);
+        let ins = first_with(&compute(&h, &s), "swap").expect("swap insight expected");
+        // The session ring holds t=51..60, so the 30-tick window clamps to 9s.
+        assert!(
+            ins.title.contains("in last 9s"),
+            "expected a real window, got: {}",
+            ins.title
+        );
     }
 
     // ── runaway_proc (uses History::proc_cpu_ewma) ────────────────────────
@@ -1293,10 +1329,37 @@ mod tests {
             t: t0 + Duration::from_secs(4 * 4),
             ..Default::default()
         };
-        // baseline_idx 0 = the oldest of the 5 pushed ticks (t=0s).
-        assert_eq!(elapsed_secs_since(&h, &now, 0), 16);
-        // baseline_idx 3 = the 4th pushed tick (t=12s) -- 4s before now.
-        assert_eq!(elapsed_secs_since(&h, &now, 3), 4);
+        // 4 back = the oldest of the 5 pushed ticks (t=0s).
+        assert_eq!(elapsed_secs_since(&h, &now, 4), 16);
+        // 1 back = the 4th pushed tick (t=12s) -- 4s before now.
+        assert_eq!(elapsed_secs_since(&h, &now, 1), 4);
+    }
+
+    #[test]
+    fn elapsed_secs_since_survives_session_ring_eviction() {
+        // The live TUI runs `History::new(120)`: 120 snapshots in the session
+        // ring, but 2048 samples in every metric series. After a couple of
+        // minutes a metric window reaches back past what the session ring
+        // still holds, and the answer has to stay a real measured number.
+        let mut h = History::new(10);
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        for i in 0..40u64 {
+            h.push(&Snapshot {
+                t: t0 + Duration::from_secs(i),
+                ..Default::default()
+            });
+        }
+        // Series kept all 40 samples; the session ring kept only t=30..39.
+        assert_eq!(h.mem.len(), 40);
+        assert_eq!(h.session.len(), 10);
+        let now = Snapshot {
+            t: t0 + Duration::from_secs(39),
+            ..Default::default()
+        };
+        // Inside the session ring: exact.
+        assert_eq!(elapsed_secs_since(&h, &now, 5), 5);
+        // Past its oldest sample (t=30s): clamped to 9s, not 0.
+        assert_eq!(elapsed_secs_since(&h, &now, 30), 9);
     }
 
     #[test]

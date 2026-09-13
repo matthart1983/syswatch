@@ -10,7 +10,7 @@
 //! The channel holds one snapshot. If the UI falls behind, the newest
 //! sample replaces the one it has not read yet rather than queueing.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -21,7 +21,10 @@ use super::model::Snapshot;
 
 /// Knobs the UI thread can turn while the worker runs.
 struct Control {
-    tick_ms: AtomicU64,
+    // u32, not u64: tick_ms is user-settable over 100..=5000 (see
+    // collector.rs), which fits comfortably, and armv5te (Iomega ix2-dl
+    // and other old Kirkwood NAS boxes) has no native 64-bit atomics.
+    tick_ms: AtomicU32,
     paused: AtomicBool,
     stop: AtomicBool,
 }
@@ -40,7 +43,7 @@ impl CollectorHandle {
     pub fn spawn(tick_ms: u64) -> Self {
         let (tx, rx) = mpsc::sync_channel::<Snapshot>(1);
         let ctrl = Arc::new(Control {
-            tick_ms: AtomicU64::new(tick_ms),
+            tick_ms: AtomicU32::new(tick_ms.clamp(100, 5000) as u32),
             paused: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
@@ -68,7 +71,9 @@ impl CollectorHandle {
 
     /// Update the sample interval. Takes effect from the next tick.
     pub fn set_tick_ms(&self, tick_ms: u64) {
-        self.ctrl.tick_ms.store(tick_ms, Ordering::Relaxed);
+        self.ctrl
+            .tick_ms
+            .store(tick_ms.clamp(100, 5000) as u32, Ordering::Relaxed);
     }
 
     /// While paused the worker sleeps instead of sampling, so a paused
@@ -113,7 +118,7 @@ fn run_loop(tx: SyncSender<Snapshot>, ctrl: Arc<Control>, tick_ms: u64) {
             }
             Err(TrySendError::Disconnected(_)) => return,
         }
-        let tick = Duration::from_millis(ctrl.tick_ms.load(Ordering::Relaxed).clamp(100, 5000));
+        let tick = Duration::from_millis(ctrl.tick_ms.load(Ordering::Relaxed) as u64);
         next_sample = Instant::now() + tick;
     }
 }

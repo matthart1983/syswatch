@@ -62,7 +62,9 @@ paru -S syswatch                      # Arch
 cargo install syswatch                # anywhere with Rust
 ```
 
-Or grab a pre-built binary from [Releases](https://github.com/matthart1983/syswatch/releases/latest).
+Or grab a pre-built binary from [Releases](https://github.com/matthart1983/syswatch/releases/latest)
+— Linux and macOS, x86_64 and aarch64, plus static musl builds, plus an armv5te build for older
+Marvell Kirkwood NAS boxes (e.g. Iomega ix2-dl) running Debian.
 
 ```bash
 # From source

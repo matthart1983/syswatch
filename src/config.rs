@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+/// Allowed range for `tick_ms`, enforced on load, in the settings editor,
+/// and by the collector worker.
+pub const MIN_TICK_MS: u64 = 100;
+pub const MAX_TICK_MS: u64 = 5000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyswatchConfig {
@@ -75,7 +80,7 @@ impl SyswatchConfig {
     /// Clamp / repair fields that may arrive out of range from a hand-edited
     /// config. Called automatically by `load()`; also exercised by tests.
     pub fn validate(&mut self) {
-        self.tick_ms = self.tick_ms.clamp(100, 5000);
+        self.tick_ms = self.tick_ms.clamp(MIN_TICK_MS, MAX_TICK_MS);
         if self.theme.is_empty() {
             self.theme = "dark".into();
         }

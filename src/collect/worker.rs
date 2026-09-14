@@ -18,12 +18,13 @@ use std::time::{Duration, Instant};
 
 use super::collector::Collector;
 use super::model::Snapshot;
+use crate::config::{MAX_TICK_MS, MIN_TICK_MS};
 
 /// Knobs the UI thread can turn while the worker runs.
 struct Control {
-    // u32, not u64: tick_ms is user-settable over 100..=5000 (see
-    // collector.rs), which fits comfortably, and armv5te (Iomega ix2-dl
-    // and other old Kirkwood NAS boxes) has no native 64-bit atomics.
+    // u32, not u64: tick_ms is clamped to MIN_TICK_MS..=MAX_TICK_MS, which
+    // fits comfortably, and armv5te (Iomega ix2-dl and other old Kirkwood
+    // NAS boxes) has no native 64-bit atomics.
     tick_ms: AtomicU32,
     paused: AtomicBool,
     stop: AtomicBool,
@@ -43,7 +44,7 @@ impl CollectorHandle {
     pub fn spawn(tick_ms: u64) -> Self {
         let (tx, rx) = mpsc::sync_channel::<Snapshot>(1);
         let ctrl = Arc::new(Control {
-            tick_ms: AtomicU32::new(tick_ms.clamp(100, 5000) as u32),
+            tick_ms: AtomicU32::new(tick_ms.clamp(MIN_TICK_MS, MAX_TICK_MS) as u32),
             paused: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
@@ -71,9 +72,10 @@ impl CollectorHandle {
 
     /// Update the sample interval. Takes effect from the next tick.
     pub fn set_tick_ms(&self, tick_ms: u64) {
-        self.ctrl
-            .tick_ms
-            .store(tick_ms.clamp(100, 5000) as u32, Ordering::Relaxed);
+        self.ctrl.tick_ms.store(
+            tick_ms.clamp(MIN_TICK_MS, MAX_TICK_MS) as u32,
+            Ordering::Relaxed,
+        );
     }
 
     /// While paused the worker sleeps instead of sampling, so a paused

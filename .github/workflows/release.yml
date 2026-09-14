@@ -24,9 +24,9 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             name: syswatch-linux-aarch64-static
-          - target: armv5te-unknown-linux-gnueabi
+          - target: armv5te-unknown-linux-musleabi
             os: ubuntu-latest
-            name: syswatch-linux-armv5te
+            name: syswatch-linux-armv5te-static
           - target: x86_64-apple-darwin
             os: macos-latest
             name: syswatch-macos-x86_64
@@ -49,20 +49,17 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
-      - name: Install armv5te cross-compiler (Iomega ix2-dl / Marvell Kirkwood, Debian armel)
-        if: matrix.target == 'armv5te-unknown-linux-gnueabi'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-arm-linux-gnueabi
-          echo "CARGO_TARGET_ARMV5TE_UNKNOWN_LINUX_GNUEABI_LINKER=arm-linux-gnueabi-gcc" >> $GITHUB_ENV
-          # zstd-sys compiles zstd's C sources from scratch (not linked
-          # against a system lib), so cc-rs needs to be told which cross
-          # compiler to use rather than guessing from the host toolchain.
-          echo "CC_armv5te_unknown_linux_gnueabi=arm-linux-gnueabi-gcc" >> $GITHUB_ENV
-          echo "AR_armv5te_unknown_linux_gnueabi=arm-linux-gnueabi-ar" >> $GITHUB_ENV
+      # armv5te goes through cross, not zigbuild: zig's musl for this
+      # target lacks the __sync_* atomic helpers libgcc provides, so the
+      # link fails. The target is static musl, so there's no glibc floor.
+      - name: Install cross (armv5te)
+        if: startsWith(matrix.target, 'armv5te')
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
       - name: Install zig + cargo-zigbuild (Linux musl)
-        if: contains(matrix.target, 'linux-musl')
+        if: contains(matrix.target, 'linux-musl') && !startsWith(matrix.target, 'armv5te')
         run: |
           python3 -m pip install --user ziglang cargo-zigbuild
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -70,7 +67,9 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          if [[ "${{ matrix.target }}" == *"linux-musl" ]]; then
+          if [[ "${{ matrix.target }}" == armv5te-* ]]; then
+            cross build --release --target ${{ matrix.target }}
+          elif [[ "${{ matrix.target }}" == *"linux-musl" ]]; then
             cargo zigbuild --release --target ${{ matrix.target }}
           else
             cargo build --release --target ${{ matrix.target }}

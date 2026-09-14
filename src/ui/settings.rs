@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::config::SyswatchConfig;
+use crate::config::{SyswatchConfig, MAX_TICK_MS, MIN_TICK_MS};
 use crate::ui::palette as p;
 use crate::ui::theme;
 
@@ -258,8 +258,11 @@ pub fn apply_edit(cfg: &mut SyswatchConfig, cursor: usize, value: &str) -> Resul
                 .trim()
                 .parse()
                 .map_err(|_| "Tick must be a positive integer".to_string())?;
-            if !(100..=5000).contains(&v) {
-                return Err("Tick must be between 100 and 5000 ms".into());
+            if !(MIN_TICK_MS..=MAX_TICK_MS).contains(&v) {
+                return Err(format!(
+                    "Tick must be between {} and {} ms",
+                    MIN_TICK_MS, MAX_TICK_MS
+                ));
             }
             cfg.tick_ms = v;
             Ok(())

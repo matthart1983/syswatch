@@ -164,7 +164,9 @@ fn main() -> Result<()> {
         let keep = cli.keep.expect("clap requires --keep with --record");
         let ring_dir = recording::ring_dir()
             .ok_or_else(|| anyhow::anyhow!("could not determine the data directory"))?;
-        let tick = std::time::Duration::from_millis(cfg.tick_ms.clamp(100, 5000));
+        let tick = std::time::Duration::from_millis(
+            cfg.tick_ms.clamp(config::MIN_TICK_MS, config::MAX_TICK_MS),
+        );
 
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         {

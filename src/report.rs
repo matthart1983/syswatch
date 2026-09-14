@@ -24,6 +24,7 @@ use serde::Serialize;
 
 use crate::app::History;
 use crate::collect::{Collector, Snapshot};
+use crate::config::{MAX_TICK_MS, MIN_TICK_MS};
 use crate::insights::{self, Insight};
 use crate::recording;
 use crate::ui::widgets::human_bytes;
@@ -118,7 +119,7 @@ fn print_snapshot_text(snap: &Snapshot) {
 // ── insights ─────────────────────────────────────────────────────────────
 
 pub fn run_insights(json: bool, since: Duration, tick_ms: u64) -> Result<()> {
-    let tick = Duration::from_millis(tick_ms.clamp(100, 5000));
+    let tick = Duration::from_millis(tick_ms.clamp(MIN_TICK_MS, MAX_TICK_MS));
     let (history, last) = sample_window(since, tick);
     let cards = insights::compute(&history, &last);
     if json {
@@ -146,7 +147,7 @@ fn print_insights_text(cards: &[Insight]) {
 // ── why ──────────────────────────────────────────────────────────────────
 
 pub fn run_why(since: Duration, tick_ms: u64) -> Result<()> {
-    let tick = Duration::from_millis(tick_ms.clamp(100, 5000));
+    let tick = Duration::from_millis(tick_ms.clamp(MIN_TICK_MS, MAX_TICK_MS));
     let (history, last) = sample_window(since, tick);
     let cards = insights::compute(&history, &last);
     if cards.is_empty() {

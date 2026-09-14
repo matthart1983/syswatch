@@ -20,7 +20,7 @@ use crate::collect::{CollectorHandle, Ring};
 // the worker thread.
 #[cfg(test)]
 use crate::collect::Collector;
-use crate::config::SyswatchConfig;
+use crate::config::{SyswatchConfig, MAX_TICK_MS, MIN_TICK_MS};
 use crate::insights::{self, Insight};
 use crate::tabs;
 use crate::ui::chrome;
@@ -1343,7 +1343,7 @@ pub fn run(opts: Options) -> Result<()> {
             // The settings popup edits tick_ms live and `p` toggles pause;
             // both are cheap to forward every iteration. The clamp
             // matches `config::validate` and `settings::apply_edit`.
-            c.set_tick_ms(app.user_config.tick_ms.clamp(100, 5000));
+            c.set_tick_ms(app.user_config.tick_ms.clamp(MIN_TICK_MS, MAX_TICK_MS));
             c.set_paused(app.paused);
 
             for s in c.drain() {

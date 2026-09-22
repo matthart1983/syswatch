@@ -1,0 +1,206 @@
+# SysWatch reference
+
+[Back to the README](../README.md). Detailed controls, views, recording and platform notes.
+
+## Build from source
+
+```bash
+git clone https://github.com/matthart1983/syswatch.git
+cd syswatch
+cargo build --release
+./target/release/syswatch
+```
+
+## Usage
+
+```bash
+syswatch --dense               # every subsystem on one screen
+syswatch                       # the twelve-tab tour, default 1Hz tick
+syswatch --lite                # the one-screen Lite view
+syswatch --tick 500            # 2Hz
+syswatch --tab procs           # boot straight into a tab
+syswatch --replay session.swr  # scrub a recorded session
+syswatch --record --keep 24h   # unattended recording, no TUI (see below)
+```
+
+### Keys
+
+```text
+1 2 3 4 5 6 7 8 9   →  Overview / CPU / Mem / Disks / FS / Procs / GPU / Power / Services
+0 - +               →  Net / Timeline / Insights
+Tab / Shift-Tab     →  Cycle tabs
+↑ / ↓               →  Select row (Procs, Services)
+s                   →  Cycle sort (Procs, Services)
+/ or f              →  Filter the table (Procs, Memory, Services)
+← / →               →  Scrub session backward / forward
+Home / End          →  Oldest sample / live
+p                   →  Pause
+g                   →  Graph style (bars / dots)
+t                   →  Cycle theme (incl. "terminal" — uses your terminal's own palette)
+,                   →  Settings (tick, theme, graph fade)
+S / R               →  Snapshot to disk / record session
+V                   →  Cycle views: Full → Lite → Dense
+L                   →  Jump straight to the Lite view
+?                   →  Help
+q / Ctrl-C          →  Quit
+```
+
+### Dense view
+
+`syswatch --dense`, or `V` to cycle Full → Lite → Dense. Every subsystem on one
+130×44 screen — [the Dense demo](../demo-dense.gif). Where [Lite](#lite-view) is the
+smallest useful thing, Dense is the largest: six boxes tiling the terminal with
+**zero chrome rows** — no header, no tab bar, no status bar. Identity, uptime,
+aggregate, sort state, page range and every keybind live inside the box borders,
+so a heading costs no row.
+
+```text
+rows  0-11  cpu            full-height braille graph · axis · vitals
+rows 12-23  mem  │ net     composition + history │ mirrored down/up
+rows 24-31  cores │ disk   per-core grid │ read/write sparklines
+rows 32-43  procs          detail-in-place + process table
+```
+
+**The mirror means "two directions of one flow."** Only `net` earns one:
+download grows up from a shared axis, upload grows down, so traffic symmetry
+becomes a shape — a restore is a cliff above the line, a backup a cliff below
+it. CPU and memory have no opposing direction, so each gets one honest
+full-height graph rather than a manufactured partner. Temperature is a bounded
+scalar, not a flow, so it sits on the vitals row with a green→red meter.
+
+Colour carries magnitude rather than identity: every cell is coloured by its own
+height in the plot, so you see a spike's severity before you read the axis. That
+split is deliberate — throughput graphs ramp cool→bright because a saturated disk
+during a backup is *working*, and only bounded values where high genuinely is bad
+(temperature, memory pressure, disk saturation) get the green→amber→red
+vocabulary. Ramps are built from your theme, never hardcoded; on the 16-colour
+`terminal` theme they step through the palette you already have rather than
+synthesising colours you never chose.
+
+`1`–`6` zoom a box to the whole frame — the process table at forty rows, or just
+the network mirror — and `esc` restores the grid. Below 100×37 it falls back to a
+three-box compact arrangement rather than cramming.
+
+Every number is measured over the window you can actually see, so a printed peak
+is never one hiding in scrolled-off history. Graphs hold one sample per column
+and fill from the right in real time, same as Lite: at the 1 Hz default a
+120-column graph shows two minutes and takes two minutes to fill. The axis says
+what it is actually showing.
+
+That GIF was recorded with `vhs demo-dense.tape` at exactly 130×44 — the size
+the grid was drawn at, so it shows the band heights the design intends rather than
+whatever a taller or narrower terminal stretches them into — under three real
+background loads: `yes` for the cores, rate-limited downloads for the net
+mirror, and the file they land in for the disk trace. `--tick 250` for the same
+reason as Lite: at 4 Hz the graphs fill inside a GIF instead of spending two
+minutes empty, and nothing is fast-forwarded to get there. What the axes read
+is the history they hold.
+
+It is the sibling of [`netwatch`](https://github.com/matthart1983/netwatch)'s
+Dense view — same primitives, same panel idiom, same `V` cycle — so muscle
+memory carries between them the way it already does for Lite.
+
+### Lite view
+
+`syswatch --lite`, or `L` at any time. One screen at 80×24 answering one
+question — *why is this machine hot, slow, or loud?* — with six keys and four
+colors. It is not the full tool with tabs hidden; it is a different product for
+someone with one machine, and the deliberate sibling of
+[`netwatch --lite`](https://github.com/matthart1983/netwatch): identical grid
+geometry, column positions, keys and palette, so muscle memory carries between
+them.
+
+<p align="center">
+  <img src="../demo-lite.gif" alt="SysWatch Lite: one 80×24 screen with live CPU and memory charts, a vitals line carrying temp, fan, power and disk, and processes sorted by CPU — expanding one in place, then filtering the list live" width="820">
+</p>
+
+```text
+q  quit     p  pause    /  filter (name or user)
+↵  detail   L  full     ?  help          ↑↓ / j k move   Esc unwind
+```
+
+Recorded with `vhs demo-lite.tape` — braille area plots (`g`) over the faint
+dot grid, with a right-bright / left-dim gradient — at
+`--tick 250` so the charts fill inside a GIF. They hold one sample per column
+and fill from the right in real time, so at the 1 Hz default the 78-column
+chart takes 78 seconds. Nothing is fast-forwarded: the axis label measures the
+history it is actually showing, and the sparkline header reports its own span,
+so both say what the faster tick did.
+
+CPU gets a three-row chart and memory two — when a machine feels wrong, CPU is
+the answer more often than RAM. A single vitals line carries temp, fan, power
+and disk throughput, each rendering `--` rather than moving when a sensor isn't
+readable. Red appears only when the machine is actually in trouble — thermal
+throttling, swap thrashing, critical memory pressure — on fixed thresholds with
+hysteresis (three samples to fire, five to clear) so it never flaps. Memory
+pressure comes from the kernel's own verdict where there is one (PSI on Linux,
+`kern.memorystatus_vm_pressure_level` on macOS) rather than being inferred from
+swap, so a Mac doing what Macs normally do doesn't read as an emergency. It follows
+your theme and graph style like every other screen, and it is read-only, same
+as the rest of syswatch.
+
+## What's distinctive
+
+**Insights tab.** Heuristic anomaly detection over the rolling session — swap thrash, runaway processes, disk full, memory pressure, high load, zombie parties — surfaced as plain-English cards with a suggested tab. The Overview's bottom strip and the tab bar's `[+]` badge keep them in sight from anywhere.
+
+**Live scrubbing, full-session recording.** The Timeline tab's `←/→` rewinds every panel at once over the last 120 samples it keeps live — two minutes at the default 1 Hz tick, less at a faster one. For anything longer, `R` records the whole session to a `.swr` file as it runs; `--replay` scrubs that back afterward with no length limit, and `S` dumps the current snapshot to disk.
+
+For recording without sitting at the terminal, `syswatch --record --keep 24h` runs headless (no TUI) and writes rotating hourly chunk files, pruning anything older than `--keep` (`30m` / `24h` / `7d` — any number plus s/m/h/d) as new ones are written. It's a plain foreground process — run it under `nohup`, a terminal multiplexer, or a user-level systemd/launchd unit if you want it to outlive your session; syswatch doesn't install anything or listen on the network on its own. `Ctrl-C` flushes the current chunk and exits cleanly. Recordings from `--record` land in a separate directory from `R`'s interactive ones, so an unattended run and a manual one you're keeping on purpose never collide or get pruned into each other.
+
+**Honest about platform limits.** Where data needs sudo (`powermetrics` for fans, per-component power, GPU util on Apple Silicon) the tab shows what we *can* get for free and a one-line note about what's gated. Nothing is faked, nothing prompts.
+
+**Non-interactive reports.** Four subcommands print a result and exit -- no TUI, no raw mode, safe to pipe into `jq` or drop into a script:
+
+```bash
+syswatch snapshot --json              # one live sample, full structure
+syswatch insights --since 30s --json  # sample briefly, print whatever fired
+syswatch why                          # same cards, as prose for a ticket
+syswatch diff before.swr after.swr    # per-subsystem deltas + process changes
+syswatch diff session.swr             # first vs last snapshot of one recording
+```
+
+`insights` and `why` sample the live host for `--since` (default 30s) before printing -- there's no background collector to ask for instant history, so both take as long as the window they're given. Longer catches slower heuristics (the memory-leak detector needs a couple of minutes of sustained growth to ever fire); the default is enough for the rest. `--json` on `snapshot`, `insights` and `diff` serializes the exact same `Snapshot` and `Insight` types the TUI itself renders, so a script sees what the tabs show, not a separate reporting-only shape.
+
+## Anti-goals
+
+- **Not multi-host.** For fleet view, use NetWatch's web dashboard.
+- **No privileged daemon, no network exposure.** `--record --keep` can run for as long as you leave it, but it's a plain foreground process you start -- nothing gets installed, nothing listens on the network, no Prometheus endpoint. A recording is a file, not a database with a query API.
+- **Not interactive remediation.** Read-only, deliberately. We don't kill, renice, unmount, or restart.
+- **Not a logging product.** We surface OOM kills as a *signal* in Memory; we are not a log search UI.
+- **Not pretty charts for screenshots.** Block sparklines, real numbers, no smooth curves, no themes-of-the-week.
+
+## Scope
+
+All twelve tabs render real data on macOS and Linux. Cross-platform collection via `sysinfo`; aggregate disk IO routes through [`netwatch-sdk`](https://github.com/matthart1983/netwatch-sdk) so SysWatch and the NetWatch agent share a single source of truth. Recording/Replay (`R` / `--replay`), unattended recording (`--record` / `--keep`), non-interactive reports (`snapshot` / `insights` / `diff` / `why`), Settings (`,`), Help (`?`), table filter (`/` or `f`, on Procs / Memory / Services), themes (`t`), the Lite view (`L` / `--lite`), the Dense view (`V` / `--dense`), and the graph-fade rendering are all live.
+
+Lite's temp / fan / power vitals depend on platform sensors: Linux reads `/sys/class/hwmon`, `/sys/class/thermal` and RAPL; macOS needs IOKit/SMC access, so on Apple Silicon those three commonly render `--` while CPU, memory, disk and processes remain fully live.
+
+**No sudo, ever.** GPU utilization, VRAM, and the renderer/tiler split on Apple Silicon come from `ioreg` (`AGXAccelerator PerformanceStatistics`); GPU temperature, per-rail power, and fans come from IOReport + SMC. Linux reads sysfs (`/sys/class/drm`, thermal zones, hwmon). Where a figure genuinely needs elevated access, the tab says so rather than prompting.
+
+**Behind cargo features** — NVIDIA live GPU stats (`gpu-nvidia`, `nvml-wrapper`).
+
+**ZFS.** On Linux hosts running ZFS, the ARC is counted as available memory rather than used. It is a filesystem cache that gives pages back under pressure, so leaving it in `used` reads as permanent memory pressure on a machine that has none.
+
+## Architecture
+
+```text
+src/
+├── main.rs              CLI + entry
+├── app.rs               Event loop, tab state, scrub plumbing
+├── collect/             One Collector per subsystem; Snapshot the wire format
+│   ├── collector.rs     sysinfo-backed CPU/Mem/Procs/Net + dispatch
+│   ├── gpu.rs           ioreg AGXAccelerator / sysfs DRM / nvml
+│   ├── macos_sampler.rs Shared IOReport + SMC worker (GPU/power/fans)
+│   ├── power.rs         ioreg / pmset / sysfs power_supply
+│   ├── services.rs      launchctl / systemctl
+│   └── ring.rs          Bounded history + nth_back for scrubbing
+├── insights/            Pure functions over (History, &Snapshot)
+├── tabs/                One file per tab; thin renderers over the model
+└── ui/
+    ├── chrome.rs        Header, tab bar, footer
+    ├── palette.rs       Single source of color truth
+    └── widgets.rs       block_bar, sparkline, panel
+```
+
+Refresh model: a 1 Hz fast loop reads CPU/Mem/Net/IO in-process every tick; the heavier collectors run on their own budgets — processes every ~1.5 s, Power/Services every 5 s, per-process bandwidth on a background thread — so the loop stays cheap regardless of tick rate. The UI redraws on tick or keypress.
+

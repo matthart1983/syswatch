@@ -214,8 +214,20 @@ fn parse_macos_ioreg_battery(text: &str) -> Option<BatteryTick> {
     let mut bat = BatteryTick::default();
     let mut saw_charge = false;
     for line in text.lines() {
-        let line = line.trim();
         // Lines look like:  "FieldName" = value
+        // When AppleSmartBattery has child nodes in the IORegistry (e.g.
+        // AppleSmartBatteryPack / AppleChargerData on newer Apple Silicon
+        // MacBooks), ioreg draws tree lines in front of every property:
+        //   |   "FieldName" = value
+        // Strip those along with the indentation.
+        let line = line
+            .trim_start_matches(|c: char| c == '|' || c.is_whitespace())
+            .trim_end();
+        // The battery's own property dict ends at the first closing brace;
+        // anything after belongs to child nodes.
+        if line == "}" {
+            break;
+        }
         let Some(eq) = line.find(" = ") else { continue };
         let key = line[..eq].trim().trim_matches('"');
         let val = line[eq + 3..].trim();
@@ -530,6 +542,39 @@ mod tests {
         assert!((bat.temp_c.unwrap() - 30.64).abs() < 0.01);
         // 18446744073709551133 == -483 as i64 → -483 mA.
         assert_eq!(bat.amperage_ma, Some(-483));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parses_ioreg_sample_with_child_nodes() {
+        // MacBook Pro Mac17,6 on macOS 27: AppleSmartBattery has child nodes,
+        // so ioreg prefixes every property line with a "|" tree marker.
+        let sample = r#"+-o AppleSmartBattery  <class AppleSmartBattery, id 0x100000e8b, registered, matched, active, busy 0 (7 ms), retain 11>
+  | {
+  |   "TimeRemaining" = 65535
+  |   "ExternalConnected" = Yes
+  |   "Voltage" = 12241
+  |   "MaxCapacity" = 100
+  |   "CurrentCapacity" = 80
+  |   "CycleCount" = 4
+  |   "FullyCharged" = No
+  |   "Amperage" = 0
+  |   "IsCharging" = No
+  | }
+  | 
+  +-o AppleSmartBatteryPack  <class AppleSmartBatteryPack, id 0x100000e9a, registered, matched, active, busy 0>
+  | +-o AppleSmartBatteryBank  <class AppleSmartBatteryBank, id 0x100000e9c, registered, matched, active, busy 0>
+  +-o AppleChargerData  <class AppleChargerData, id 0x100000eab, registered, matched, active, busy 0 (1 ms)>
+"#;
+        let bat = parse_macos_ioreg_battery(sample).expect("battery parsed");
+        assert_eq!(bat.charge_pct as i32, 80);
+        assert_eq!(bat.cycle_count, Some(4));
+        assert_eq!(bat.health_pct, Some(100.0));
+        assert!(!bat.is_charging);
+        assert!(!bat.fully_charged);
+        assert_eq!(bat.time_remaining_min, None);
+        assert!((bat.voltage_v.unwrap() - 12.241).abs() < 0.001);
+        assert_eq!(bat.amperage_ma, Some(0));
     }
 
     #[cfg(target_os = "macos")]

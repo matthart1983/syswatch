@@ -10,6 +10,9 @@
     <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue" alt="Platform">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
+  <p align="center">
+    <a href="https://trendshift.io/repositories/41275?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-41275" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/41275/daily?language=Rust" alt="matthart1983%2Fsyswatch | Trendshift" width="250" height="55"/></a>
+  </p>
 </p>
 
 <p align="center">

@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::time::{Instant, SystemTime};
 
-use sysinfo::{Disks, Networks, Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind, Users};
+use sysinfo::{
+    CpuRefreshKind, Disks, MemoryRefreshKind, Networks, Pid, ProcessRefreshKind, RefreshKind,
+    System, UpdateKind, Users,
+};
 
 use super::gpu::GpuDiscovery;
 #[cfg(target_os = "macos")]
@@ -56,6 +59,31 @@ pub struct Collector {
     macos: Option<MacosSampler>,
 }
 
+/// The process fields `collect_procs` reads, for the first refresh in
+/// `Collector::new` and every one after it. User and cmd are
+/// `OnlyIfNotSet`, the same as `everything()` has them: a process's UID
+/// and command line don't change after exec, so sysinfo reads them once
+/// per process and keeps them. `Always` there doubled the cost of a
+/// process refresh. Everything else `everything()` adds (environ, exe,
+/// cwd, root) is never shown, so it is never read.
+fn process_refresh_kind() -> ProcessRefreshKind {
+    ProcessRefreshKind::new()
+        .with_cpu()
+        .with_memory()
+        .with_disk_usage()
+        .with_user(UpdateKind::OnlyIfNotSet)
+        .with_cmd(UpdateKind::OnlyIfNotSet)
+}
+
+/// What `Collector::new` refreshes before the first sample: CPU and memory
+/// as `sample` refreshes them, and processes with [`process_refresh_kind`].
+fn startup_refresh_kind() -> RefreshKind {
+    RefreshKind::new()
+        .with_cpu(CpuRefreshKind::everything())
+        .with_memory(MemoryRefreshKind::everything())
+        .with_processes(process_refresh_kind())
+}
+
 impl Collector {
     /// `tick_ms` is the UI sample rate from `SyswatchConfig`. On macOS
     /// it threads through to the IOReport+SMC sampler worker so the
@@ -65,8 +93,7 @@ impl Collector {
     pub fn new(tick_ms: u64) -> Self {
         let _ = tick_ms; // suppress unused on non-macos
 
-        let mut sys = System::new_with_specifics(RefreshKind::everything());
-        sys.refresh_all();
+        let sys = System::new_with_specifics(startup_refresh_kind());
         let disks = Disks::new_with_refreshed_list();
         let nets = Networks::new_with_refreshed_list();
         let users = Users::new_with_refreshed_list();
@@ -144,22 +171,10 @@ impl Collector {
             .map(|t| now.duration_since(t) >= PROCS_REFRESH)
             .unwrap_or(true);
         if procs_stale {
-            // Only the fields `collect_procs` reads, and at the same
-            // update cadence `everything()` used for them: user and cmd
-            // are `OnlyIfNotSet` because a process's UID and command
-            // line don't change after exec, so they're read once and
-            // cached by sysinfo itself. `everything()` also re-reads
-            // environ, exe, cwd and root for every process every 1.5s,
-            // which is real cost for fields we never look at.
             self.sys.refresh_processes_specifics(
                 sysinfo::ProcessesToUpdate::All,
                 true,
-                ProcessRefreshKind::new()
-                    .with_cpu()
-                    .with_memory()
-                    .with_disk_usage()
-                    .with_user(UpdateKind::OnlyIfNotSet)
-                    .with_cmd(UpdateKind::OnlyIfNotSet),
+                process_refresh_kind(),
             );
             self.last_procs_refresh = Some(now);
         }
@@ -979,5 +994,36 @@ Threads:\t17
         assert!(threads.unwrap_or(0) >= 1);
         // Peak comes from rusage in proc_memory on macOS, not here.
         assert_eq!(peak, None);
+    }
+
+    #[test]
+    fn process_refresh_reads_only_the_fields_collect_procs_uses() {
+        let kind = process_refresh_kind();
+        assert!(kind.cpu() && kind.memory() && kind.disk_usage());
+        // Read once per process and kept, as `everything()` does.
+        assert_eq!(kind.user(), UpdateKind::OnlyIfNotSet);
+        assert_eq!(kind.cmd(), UpdateKind::OnlyIfNotSet);
+        for unused in [kind.environ(), kind.exe(), kind.cwd(), kind.root()] {
+            assert_eq!(unused, UpdateKind::Never);
+        }
+        // Startup asks for the same process fields as every later refresh.
+        assert_eq!(startup_refresh_kind().processes(), Some(kind));
+    }
+
+    /// This test process has an environment and a command line sysinfo can
+    /// read, so an empty environ after startup and a sample means it wasn't
+    /// asked for.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn startup_and_sample_leave_environ_unread() {
+        assert!(std::env::vars_os().next().is_some());
+        let mut c = Collector::new(1000);
+        c.sample();
+        let me = c
+            .sys
+            .process(Pid::from_u32(std::process::id()))
+            .expect("this process is listed");
+        assert!(!me.cmd().is_empty(), "cmd is still read");
+        assert!(me.environ().is_empty(), "environ was read");
     }
 }

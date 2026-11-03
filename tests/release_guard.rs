@@ -269,6 +269,29 @@ fn prereleases_and_old_tags_publish_nothing_they_shouldnt() {
     );
 }
 
+/// `cargo publish` refuses a checkout with uncommitted files in it, so the
+/// publish step's log has to live outside the checkout. v0.14.5's first
+/// publish failed on a `publish.log` written beside Cargo.toml.
+#[test]
+#[ignore = "reads .github, which the Nix build's source leaves out"]
+fn the_publish_log_is_written_outside_the_checkout() {
+    let workflow = read(".github/workflows/release.yml");
+    assert!(
+        workflow.contains("log=\"$RUNNER_TEMP/publish.log\""),
+        "the publish step should log to $RUNNER_TEMP"
+    );
+    for line in workflow.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        assert!(
+            !line.contains("> publish.log") && !line.contains(" publish.log;"),
+            "release.yml writes or reads publish.log in the checkout: {line}"
+        );
+    }
+}
+
 /// On a dispatch, github.ref is a branch. Every checkout of this repository
 /// has to name the tag, or a re-run would build main.
 #[test]

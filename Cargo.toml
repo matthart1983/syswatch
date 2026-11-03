@@ -1,6 +1,6 @@
 [package]
 name = "syswatch"
-version = "0.14.4"
+version = "0.14.5"
 edition = "2021"
 # The oldest Rust that builds this lockfile: uuid 1.29, through netwatch-sdk,
 # needs 1.89. CI's msrv job checks it on every push.

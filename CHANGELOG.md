@@ -15,6 +15,8 @@ brackets are issues and pull requests.
 
 ## [Unreleased]
 
+## [0.14.5] - 2026-11-03
+
 ### Security
 
 - Recordings from `R` and `--record`, `S` snapshots and the config are now

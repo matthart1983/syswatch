@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Allowed range for `tick_ms`, enforced on load, in the settings editor,
 /// and by the collector worker.
@@ -101,11 +101,19 @@ impl SyswatchConfig {
     pub fn save(&self) -> anyhow::Result<()> {
         let path =
             Self::path().ok_or_else(|| anyhow::anyhow!("cannot determine config directory"))?;
+        self.save_to(&path)
+    }
+
+    /// [`save`](Self::save) to `path`: the file is 0600, and a directory
+    /// this creates is 0700, like everything else syswatch writes. The
+    /// new config replaces the old one in a single rename, so a failed
+    /// write leaves the old one as it was.
+    fn save_to(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            crate::owner_only::create_dir_all(parent)?;
         }
         let contents = toml::to_string_pretty(self)?;
-        fs::write(path, contents)?;
+        crate::atomic_file::replace(path, contents.as_bytes())?;
         Ok(())
     }
 }
@@ -188,6 +196,29 @@ mod tests {
         assert_eq!(parsed.graph_style, original.graph_style);
         assert_eq!(parsed.default_tab, original.default_tab);
         assert_eq!(parsed.tick_ms, original.tick_ms);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_config_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("syswatch").join("config.toml");
+        let cfg = SyswatchConfig {
+            theme: "nord".into(),
+            ..Default::default()
+        };
+        cfg.save_to(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        let parsed: SyswatchConfig = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.theme, "nord");
+
+        // A config an older syswatch wrote at 0644 is narrowed by the next save.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        cfg.save_to(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
     }
 
     #[test]

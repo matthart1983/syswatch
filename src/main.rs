@@ -2,9 +2,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod app;
+mod atomic_file;
 mod collect;
 mod config;
 mod insights;
+mod owner_only;
 mod recording;
 mod report;
 mod snapshot;
@@ -103,7 +105,9 @@ struct Cli {
     /// under the data directory, and prune chunks older than --keep as
     /// new ones start. Runs until interrupted (Ctrl-C, SIGTERM or
     /// SIGHUP), which flushes the current chunk before exiting. Requires
-    /// --keep.
+    /// --keep. Chunks hold every visible process's full command line,
+    /// including any password passed as an argument, and only your user can
+    /// read them.
     #[arg(long, requires = "keep")]
     record: bool,
 

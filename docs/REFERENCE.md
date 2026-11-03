@@ -147,6 +147,8 @@ as the rest of syswatch.
 
 For recording without sitting at the terminal, `syswatch --record --keep 24h` runs headless (no TUI) and writes rotating hourly chunk files, pruning anything older than `--keep` (`30m` / `24h` / `7d` — any number plus s/m/h/d) as new ones are written. It's a plain foreground process — run it under `nohup`, a terminal multiplexer, or a user-level systemd/launchd unit if you want it to outlive your session; syswatch doesn't install anything or listen on the network on its own. `Ctrl-C`, SIGTERM (what `systemctl stop` sends) and SIGHUP each flush the current chunk and exit cleanly. Under `nohup` SIGHUP stays ignored, so closing the terminal doesn't stop the recording. Recordings from `--record` land in a separate directory from `R`'s interactive ones, so an unattended run and a manual one you're keeping on purpose never collide or get pruned into each other.
 
+Recordings (`R`, `--record`) and `S` snapshots contain every visible process's full command line, including any password or token passed as an argument. Only your user can read them, so check what's in one before you share it.
+
 **Honest about platform limits.** Where data needs sudo (`powermetrics` for fans, per-component power, GPU util on Apple Silicon) the tab shows what we *can* get for free and a one-line note about what's gated. Nothing is faked, nothing prompts.
 
 **Non-interactive reports.** Four subcommands print a result and exit -- no TUI, no raw mode, safe to pipe into `jq` or drop into a script:

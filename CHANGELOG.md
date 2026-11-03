@@ -15,6 +15,27 @@ brackets are issues and pull requests.
 
 ## [Unreleased]
 
+### Security
+
+- Recordings from `R` and `--record`, `S` snapshots and the config are now
+  created readable only by your user, with files at 0600 and directories at
+  0700. Recordings and snapshots contain every visible process's full
+  command line, and earlier versions created them under your umask, which
+  usually let other users read them. syswatch narrows its `sessions`, `ring`
+  and `snapshots` directories to 0700 the next time it writes to each one.
+  To protect files an earlier version wrote right away, run
+  `chmod -R go= ~/.local/share/syswatch` on Linux or
+  `chmod -R go= ~/Library/Application\ Support/syswatch` on macOS,
+  and check any copies you keep elsewhere.
+- `S` always creates a new snapshot file and never opens an existing entry
+  at the same name. The config is saved through a temporary file and a
+  rename.
+- Startup no longer reads other processes' environment variables. A full
+  sysinfo refresh at startup read `/proc/<pid>/environ` for every readable
+  process and kept the values in memory, though syswatch never showed them.
+- zstd's decoders for pre-1.0 formats are no longer built into syswatch. No
+  version of syswatch wrote those formats.
+
 ### Changed
 
 - The minimum supported Rust is now 1.89. `Cargo.toml` declares it, and CI

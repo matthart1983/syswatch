@@ -681,7 +681,7 @@ fn prune_chunks(ring_dir: &Path, keep: Duration) -> Result<usize> {
 /// rotating chunk files under `ring_dir` (a new one every
 /// `chunk_duration`), and prune chunks older than `keep` each time a
 /// new one starts. Runs until `stop` is set to `true` -- the real
-/// entry point (`main.rs`) sets that from a Ctrl-C/SIGTERM handler;
+/// entry point (`main.rs`) sets that from a SIGINT/SIGTERM/SIGHUP handler;
 /// tests set it directly, no signal handling involved.
 ///
 /// Flushes the current chunk on every exit path (the loop ending, or

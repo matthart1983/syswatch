@@ -246,16 +246,26 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Resolve the layout for `area`.
+    ///
+    /// Never panics, whatever the size. The key handler lays out against the
+    /// last frame size it saw, which can be a few rows tall, so this runs at
+    /// sizes `render` refuses to draw. A degenerate `Rect` gets a degenerate
+    /// layout, as in [`crate::ui::lite::Layout::new`].
     pub fn new(area: Rect) -> Self {
         let w = area.width;
         let (x, y) = (area.x, area.y);
         if area.height < MIN_FULL_H || w < MIN_FULL_W {
             // Compact: cpu gets what's left after a fixed io strip and a procs
             // box with a floor, so the graph shrinks before the table does.
+            // Cap the floor at the rows left under the io strip, not at the
+            // whole height. Capped at the height, the floor went above the
+            // clamp's upper bound at heights 3 to 8, and `clamp` panics when
+            // min > max.
             let io_h = 4.min(area.height.saturating_sub(2));
-            let procs_h = ((area.height.saturating_sub(io_h)) / 2)
-                .clamp(MIN_PROCS.min(area.height), area.height.saturating_sub(io_h));
-            let cpu_h = area.height.saturating_sub(io_h + procs_h);
+            let rest = area.height - io_h;
+            let procs_h = (rest / 2).clamp(MIN_PROCS.min(rest), rest);
+            let cpu_h = rest - procs_h;
             return Self {
                 shape: Shape::Compact,
                 zoom: None,
@@ -454,7 +464,6 @@ pub fn render(f: &mut Frame, app: &App, snap: &Snapshot) {
     let area = f.area();
     let t = theme::active();
     let ramps = Ramps::from_theme(&t);
-    let l = Layout::with_zoom(area, app.dense.zoom);
 
     // Paint the ground once. Dense fills every cell it owns, so a partially
     // drawn frame never shows the previous view through the gaps.
@@ -482,6 +491,7 @@ pub fn render(f: &mut Frame, app: &App, snap: &Snapshot) {
         return;
     }
 
+    let l = Layout::with_zoom(area, app.dense.zoom);
     match l.shape {
         Shape::Full => {
             cpu_box(buf, l.cpu, &t, &ramps, app, snap);
@@ -2105,6 +2115,35 @@ mod tests {
                     }
                 }
                 assert_eq!(l.procs.bottom(), h, "{w}x{h}");
+            }
+        }
+    }
+
+    /// The key handler lays Dense out against the last size the terminal
+    /// reported, including sizes `render` refuses to draw. So the layout has
+    /// to hold at every size down to 0x0, zoomed or not. It must not panic,
+    /// every box must stay inside the frame, and the compact bands must still
+    /// tile the full height.
+    #[test]
+    fn layout_holds_at_every_size_including_degenerate_ones() {
+        for w in 0..=160u16 {
+            for h in 0..=60u16 {
+                let area = Rect::new(0, 0, w, h);
+                for zoom in [None, Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)] {
+                    let l = Layout::with_zoom(area, zoom);
+                    for r in [l.cpu, l.mem, l.net, l.cores, l.disk, l.procs] {
+                        assert!(
+                            r.right() <= w && r.bottom() <= h,
+                            "{w}x{h} zoom={zoom:?}: {r:?} leaves the frame"
+                        );
+                    }
+                    let _ = l.visible_procs();
+                    if zoom.is_none() && l.shape == Shape::Compact {
+                        assert_eq!(l.cpu.bottom(), l.mem.y, "{w}x{h}");
+                        assert_eq!(l.mem.bottom(), l.procs.y, "{w}x{h}");
+                        assert_eq!(l.procs.bottom(), h, "{w}x{h}");
+                    }
+                }
             }
         }
     }

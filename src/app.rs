@@ -1931,6 +1931,194 @@ mod tests {
         }
     }
 
+    /// Every view and every tab has to survive terminals from 1x1 to 30x10.
+    /// A size reaches the code three ways, and this checks each. `draw` is
+    /// the normal path. The Lite and Dense renderers are called directly too,
+    /// since both say they handle any size. The key handlers lay out against
+    /// `last_area` without `draw`'s floor. Dense's compact layout used to
+    /// panic at heights 3 to 8, through `draw` at 6 to 8 and through the key
+    /// handler at 3 to 5.
+    #[test]
+    fn every_view_and_tab_survives_tiny_terminals() {
+        use crate::collect::{
+            CpuTick, DiskUsageTick, GpuTick, InterfaceTick, MemTick, PressureTick, ServiceStatus,
+            ServiceTick,
+        };
+        use crate::config::SyswatchConfig;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+
+        let snap = Snapshot {
+            cpu: CpuTick {
+                usage_pct: 40.0,
+                load_1: 1.42,
+                per_core: vec![20.0, 60.0, 90.0, 10.0],
+                ..Default::default()
+            },
+            mem: MemTick {
+                total_bytes: 34_359_738_368,
+                used_bytes: 21_260_179_865,
+                available_bytes: 13_099_558_503,
+                swap_total_bytes: 4_294_967_296,
+                swap_used_bytes: 1_073_741_824,
+                ..Default::default()
+            },
+            disks: vec![DiskUsageTick {
+                mount_point: "/".into(),
+                device: "/dev/nvme0n1p3".into(),
+                fs_type: "btrfs".into(),
+                total_bytes: 1_000_000_000_000,
+                used_bytes: 400_000_000_000,
+                available_bytes: 600_000_000_000,
+                usage_pct: 40.0,
+                ..Default::default()
+            }],
+            net: vec![InterfaceTick {
+                name: "eth0".into(),
+                is_up: true,
+                rx_rate: 1_000_000.0,
+                tx_rate: 50_000.0,
+                ..Default::default()
+            }],
+            gpus: vec![GpuTick {
+                name: "gpu0".into(),
+                vendor: "Test".into(),
+                util_pct: Some(50.0),
+                ..Default::default()
+            }],
+            services: vec![ServiceTick {
+                name: "sshd.service".into(),
+                status: ServiceStatus::Running,
+                pid: Some(900),
+                ..Default::default()
+            }],
+            pressure: Some(PressureTick {
+                cpu_some: 12.0,
+                ..Default::default()
+            }),
+            procs: vec![
+                ProcTick {
+                    pid: 1,
+                    name: "firefox".into(),
+                    user: "jules".into(),
+                    cpu_pct: 18.4,
+                    ..Default::default()
+                },
+                ProcTick {
+                    pid: 2,
+                    name: "网络监视器进程网络监视器".into(),
+                    cpu_pct: 6.4,
+                    ..Default::default()
+                },
+                proc(3, 0.0),
+            ],
+            ..Default::default()
+        };
+
+        let mut app = App::new(TabId::Overview, SyswatchConfig::default());
+        for _ in 0..3 {
+            app.history.push(&snap);
+        }
+        app.snap = Some(snap.clone());
+
+        // Full once per tab. Lite and Dense own the whole frame, so the tab
+        // behind them doesn't change what they draw; Dense goes once per
+        // zoom state instead, since zoom changes its layout.
+        let mut screens: Vec<(ViewMode, TabId, Option<u8>)> = ALL_TABS
+            .iter()
+            .map(|&t| (ViewMode::Full, t, None))
+            .collect();
+        screens.push((ViewMode::Lite, TabId::Overview, None));
+        screens.push((ViewMode::Dense, TabId::Overview, None));
+        for z in 1..=6 {
+            screens.push((ViewMode::Dense, TabId::Overview, Some(z)));
+        }
+        // The keys whose handlers read the frame geometry.
+        let keys = [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+            KeyCode::End,
+            KeyCode::Home,
+            KeyCode::Char('1'),
+            KeyCode::Char('2'),
+            KeyCode::Char('3'),
+            KeyCode::Char('4'),
+            KeyCode::Char('5'),
+            KeyCode::Char('6'),
+            KeyCode::Esc,
+        ];
+
+        // Each panic prints through the default hook, so stop after a few
+        // rather than flooding the log with thousands of the same one.
+        const MAX_FAILURES: usize = 20;
+        let mut failures: Vec<String> = Vec::new();
+        let mut check = |what: String, f: &mut dyn FnMut()| {
+            if failures.len() < MAX_FAILURES && catch_unwind(AssertUnwindSafe(f)).is_err() {
+                failures.push(what);
+            }
+        };
+
+        for w in 1..=30u16 {
+            for h in 1..=10u16 {
+                for &(view, tab, zoom) in &screens {
+                    for overlay in ["", "help", "settings"] {
+                        app.view_mode = view;
+                        app.active = tab;
+                        app.dense.zoom = zoom;
+                        app.help_active = overlay == "help";
+                        app.settings_active = overlay == "settings";
+                        check(
+                            format!("draw {view:?} {tab:?} zoom={zoom:?} {overlay} {w}x{h}"),
+                            &mut || {
+                                let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+                                term.draw(|f| draw(f, &app, &snap)).unwrap();
+                            },
+                        );
+                    }
+                    app.help_active = false;
+                    app.settings_active = false;
+                    match view {
+                        ViewMode::Lite => check(format!("lite::render {w}x{h}"), &mut || {
+                            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+                            term.draw(|f| crate::ui::lite::render(f, &app, &snap))
+                                .unwrap();
+                        }),
+                        ViewMode::Dense => {
+                            check(format!("dense::render zoom={zoom:?} {w}x{h}"), &mut || {
+                                let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+                                term.draw(|f| crate::ui::dense::render(f, &app, &snap))
+                                    .unwrap();
+                            })
+                        }
+                        ViewMode::Full => {}
+                    }
+                    if view != ViewMode::Full {
+                        app.last_area = Rect::new(0, 0, w, h);
+                        for &code in &keys {
+                            app.view_mode = view;
+                            app.dense.zoom = zoom;
+                            check(
+                                format!("key {code:?} in {view:?} zoom={zoom:?} {w}x{h}"),
+                                &mut || {
+                                    app.handle_key(KeyEvent::from(code));
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "panicked in {} cases (the count stops at {MAX_FAILURES}): {failures:#?}",
+            failures.len()
+        );
+    }
+
     /// Toggling views must not disturb the other view's cursor, and leaving
     /// Lite must close its transient state so returning is a clean screen.
     #[test]

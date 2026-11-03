@@ -60,10 +60,13 @@ postcard = { version = "1", features = ["use-std"] }
 # delta encoding in recording.rs — general-purpose compression still helps
 # once the identity/volatile split has removed the biggest redundancy.
 zstd = "0.14"
-# Clean Ctrl-C/SIGTERM handling for `syswatch --record`, so an
+# Clean Ctrl-C/SIGTERM/SIGHUP handling for `syswatch --record`, so an
 # unattended recording flushes its current chunk instead of losing it
-# to an abrupt kill (Rust doesn't unwind on signal delivery).
-ctrlc = "3"
+# to an abrupt kill (Rust doesn't unwind on signal delivery). Without
+# `termination` the handler covers SIGINT only, and `systemctl stop`
+# (SIGTERM) or a closed terminal (SIGHUP) killed the recorder with up
+# to a block of ticks still in memory.
+ctrlc = { version = "3", features = ["termination"] }
 
 # Linux NVIDIA support is opt-in: enabling `gpu-nvidia` links libnvidia-ml,
 # which only ships on hosts with the proprietary driver installed.

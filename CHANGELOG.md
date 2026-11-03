@@ -31,6 +31,9 @@ brackets are issues and pull requests.
   exits 0.
 - Dense no longer crashes in a terminal 3 to 8 rows tall, or on a key press
   in one, which used to leave the terminal in raw mode (#39).
+- `--record` now flushes its current chunk and exits cleanly on SIGTERM
+  (`systemctl stop`) and SIGHUP, not only on Ctrl-C, and still ignores
+  SIGHUP under `nohup` (#41).
 
 ### Release process
 

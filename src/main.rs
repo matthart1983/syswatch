@@ -101,8 +101,9 @@ struct Cli {
     /// Record continuously in the background, no TUI: sample on --tick
     /// (or the saved config's tick), write into rotating chunk files
     /// under the data directory, and prune chunks older than --keep as
-    /// new ones start. Runs until interrupted (Ctrl-C / SIGTERM),
-    /// which flushes the current chunk before exiting. Requires --keep.
+    /// new ones start. Runs until interrupted (Ctrl-C, SIGTERM or
+    /// SIGHUP), which flushes the current chunk before exiting. Requires
+    /// --keep.
     #[arg(long, requires = "keep")]
     record: bool,
 
@@ -132,6 +133,42 @@ fn reset_sigpipe() {
 
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
+
+/// Which of `sigs` this process inherited as ignored.
+///
+/// `nohup` starts a command with SIGHUP ignored so it outlives the
+/// terminal, and the docs suggest running `--record` that way. ctrlc's
+/// handler replaces whatever disposition was there, so `--record` reads
+/// these first and puts the ignores back with [`ignore_signals`] after
+/// installing it. Otherwise closing the terminal would stop a `nohup`
+/// recording.
+#[cfg(unix)]
+fn ignored_signals(sigs: &[libc::c_int]) -> Vec<libc::c_int> {
+    sigs.iter()
+        .copied()
+        .filter(|&sig| {
+            // SAFETY: with a null new action, sigaction only writes the
+            // current disposition into `old`, which is a valid,
+            // zero-initialised `sigaction`.
+            unsafe {
+                let mut old: libc::sigaction = std::mem::zeroed();
+                libc::sigaction(sig, std::ptr::null(), &mut old) == 0
+                    && old.sa_sigaction == libc::SIG_IGN
+            }
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn ignore_signals(sigs: &[libc::c_int]) {
+    for &sig in sigs {
+        // SAFETY: SIG_IGN is a valid static disposition constant; this
+        // only changes how the process reacts to `sig`.
+        unsafe {
+            libc::signal(sig, libc::SIG_IGN);
+        }
+    }
+}
 
 fn main() -> Result<()> {
     reset_sigpipe();
@@ -168,13 +205,21 @@ fn main() -> Result<()> {
             cfg.tick_ms.clamp(config::MIN_TICK_MS, config::MAX_TICK_MS),
         );
 
+        // One handler for SIGINT, SIGTERM and SIGHUP (ctrlc's `termination`
+        // feature) asks the loop to stop, so the current block is flushed.
+        // An ignore inherited for SIGTERM or SIGHUP stays in place. SIGINT
+        // keeps the behaviour it always had, where the handler wins.
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         {
+            #[cfg(unix)]
+            let inherited = ignored_signals(&[libc::SIGTERM, libc::SIGHUP]);
             let stop = std::sync::Arc::clone(&stop);
             ctrlc::set_handler(move || {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
             })
-            .map_err(|e| anyhow::anyhow!("could not install Ctrl-C handler: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("could not install the stop-signal handler: {e}"))?;
+            #[cfg(unix)]
+            ignore_signals(&inherited);
         }
 
         eprintln!(

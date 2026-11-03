@@ -15,6 +15,12 @@ brackets are issues and pull requests.
 
 ## [Unreleased]
 
+### Release process
+
+- The release workflow's crates.io step writes its log under `$RUNNER_TEMP`.
+  A log file in the checkout made `cargo publish` refuse a dirty tree, which
+  stopped 0.14.5's first publish.
+
 ## [0.14.5] - 2026-11-03
 
 ### Security

@@ -205,13 +205,16 @@ jobs:
           # cargo would end the step before the check below, and without
           # pipefail tee's status would hide cargo's, as it hid a 403 on
           # netwatch. Cargo's wording for a version that exists has changed
-          # once, so both are matched.
+          # once, so both are matched. The log goes under $RUNNER_TEMP: a file in
+          # the checkout makes the tree dirty, and cargo publish refuses that,
+          # which stopped v0.14.5's first publish.
           rc=0
-          cargo publish --locked > publish.log 2>&1 || rc=$?
-          cat publish.log
+          log="$RUNNER_TEMP/publish.log"
+          cargo publish --locked > "$log" 2>&1 || rc=$?
+          cat "$log"
           if [ "$rc" -eq 0 ]; then
             echo "Published ${RELEASE_TAG#v}"
-          elif grep -qE "already (uploaded|exists on crates.io)" publish.log; then
+          elif grep -qE "already (uploaded|exists on crates.io)" "$log"; then
             echo "${RELEASE_TAG#v} is already on crates.io; skipping"
           else
             echo "::error::cargo publish failed (exit $rc) for a reason other than the version already being there"

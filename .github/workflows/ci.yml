@@ -32,6 +32,34 @@ jobs:
       - name: Test
         run: cargo test
 
+  # Advisories, licenses and sources for every dependency, per deny.toml. A
+  # new RustSec advisory turns this red with no code change, which is the
+  # point: the fix is an upgrade, or an ignore with a reason in deny.toml.
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+
+  # The declared rust-version still builds. Without this job, `rust-version`
+  # in Cargo.toml is a guess: the test matrix uses the latest stable, which
+  # accepts code and dependencies an older compiler would refuse.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: echo "version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain from input
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: cargo check on the minimum supported Rust
+        run: cargo check --all-targets --locked
+
   # Nothing built the flake, so it silently rotted: the version was
   # pinned five releases behind and `src` was dragging `target/` into
   # the store. Cheap Linux-only job to keep both honest.

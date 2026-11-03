@@ -2,6 +2,9 @@
 name = "syswatch"
 version = "0.14.4"
 edition = "2021"
+# The oldest Rust that builds this lockfile: uuid 1.29, through netwatch-sdk,
+# needs 1.89. CI's msrv job checks it on every push.
+rust-version = "1.89"
 description = "Single-host, read-only system diagnostics TUI. Twelve tabs covering CPU, memory, disks, processes, GPU, power, services, network, plus a Timeline scrubber and an Insights anomaly engine. Sibling to netwatch."
 license = "MIT"
 repository = "https://github.com/matthart1983/syswatch"
@@ -10,11 +13,13 @@ readme = "README.md"
 keywords = ["system", "monitoring", "tui", "diagnostics", "observability"]
 categories = ["command-line-utilities"]
 exclude = [
-    # Demo assets aren't needed by anyone consuming the crate.
-    "demo.gif",
-    "demo.tape",
-    "Formula/**",
-    "LAUNCH_DRAFT.md",
+    # The demo GIFs, and the VHS tapes and scripts that record them. The
+    # GIFs made the 0.14.4 crate 6.1 MB, against about 260 KB without
+    # them, and crates.io refuses a crate over 10 MiB. The README's images
+    # still show on crates.io, which points relative links at the repository.
+    "/demo*.gif",
+    "/demo*.tape",
+    "/scripts/demo-*",
 ]
 
 [[bin]]
@@ -29,7 +34,6 @@ crossterm = "0.28"
 # most of syswatch's idle CPU and thread count (issue #4).
 sysinfo = { version = "0.32", default-features = false, features = ["system", "disk", "network", "user"] }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

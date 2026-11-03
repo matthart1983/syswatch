@@ -70,7 +70,7 @@ ctrlc = { version = "3", features = ["termination"] }
 
 # Linux NVIDIA support is opt-in: enabling `gpu-nvidia` links libnvidia-ml,
 # which only ships on hosts with the proprietary driver installed.
-nvml-wrapper = { version = "0.12", optional = true }
+nvml-wrapper = { version = "0.13", optional = true }
 
 # macOS-only IOReport + SMC bindings (Apple Silicon GPU temp + per-rail
 # power, no sudo). macpow's library has a compile_error gate for non-macOS,

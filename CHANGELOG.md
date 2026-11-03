@@ -29,6 +29,8 @@ brackets are issues and pull requests.
 
 - The Homebrew tap formula's test expected `syswatch --help` to exit 1. It
   exits 0.
+- Dense no longer crashes in a terminal 3 to 8 rows tall, or on a key press
+  in one, which used to leave the terminal in raw mode (#39).
 
 ### Release process
 

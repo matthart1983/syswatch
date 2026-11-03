@@ -33,15 +33,21 @@ pub fn write(snap: &Snapshot) -> anyhow::Result<PathBuf> {
 }
 
 /// [`write`] into `dir`. The snapshot lists every process's full command
-/// line, so the file is 0600 and `dir` is 0700.
+/// line, so the file is 0600 and `dir` is 0700. The file is always a new
+/// one: a second snapshot within the same second, or anything else already
+/// at that name, gets a numbered name instead (`snap-…-1.json`).
 fn write_in(dir: &Path, snap: &Snapshot) -> anyhow::Result<PathBuf> {
     crate::owner_only::create_dir_all(dir)?;
     let ts: DateTime<Local> = snap.t.into();
     // Filesystem-safe ISO-8601 (no colons — those break Windows paths).
-    let stem = ts.format("snap-%Y-%m-%dT%H-%M-%S");
-    let path = dir.join(format!("{}.json", stem));
+    let stem = ts.format("snap-%Y-%m-%dT%H-%M-%S").to_string();
     let body = serde_json::to_string_pretty(snap)?;
-    crate::owner_only::create(&path)?.write_all(body.as_bytes())?;
+    let (path, mut file) = crate::owner_only::create_new_numbered(dir, &stem, "json")?;
+    if let Err(e) = file.write_all(body.as_bytes()) {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return Err(e.into());
+    }
     Ok(path)
 }
 
@@ -115,5 +121,40 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         write_in(&dir, &near_empty_snapshot()).unwrap();
         assert_eq!(mode(&dir), 0o700);
+    }
+
+    #[test]
+    fn a_second_snapshot_in_the_same_second_gets_a_new_file() {
+        let root = tempfile::tempdir().unwrap();
+        let first = write_in(root.path(), &near_empty_snapshot()).unwrap();
+        let second = write_in(root.path(), &near_empty_snapshot()).unwrap();
+        assert_ne!(first, second);
+        let stem = first.file_stem().unwrap().to_string_lossy().into_owned();
+        assert_eq!(second, root.path().join(format!("{stem}-1.json")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_entry_at_the_snapshot_name_is_left_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("snapshots");
+        std::fs::create_dir(&dir).unwrap();
+        let other = root.path().join("other.txt");
+        std::fs::write(&other, "original").unwrap();
+        // Find the name the snapshot would take, then put a link there.
+        let name = write_in(&dir, &near_empty_snapshot()).unwrap();
+        std::fs::remove_file(&name).unwrap();
+        std::os::unix::fs::symlink(&other, &name).unwrap();
+
+        let written = write_in(&dir, &near_empty_snapshot()).unwrap();
+        assert_ne!(written, name);
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "original");
+        assert!(std::fs::symlink_metadata(&name)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&written).unwrap()).unwrap();
+        assert!(v.get("procs").is_some());
     }
 }

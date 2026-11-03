@@ -10,16 +10,15 @@
 
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
-const FILE_MODE: u32 = 0o600;
+pub(crate) const FILE_MODE: u32 = 0o600;
 #[cfg(unix)]
 const DIR_MODE: u32 = 0o700;
 
-/// Write options whose new files are 0600. The caller adds `create`,
-/// `create_new` or `truncate`. The mode applies only to a file the open
-/// creates; [`create`] also narrows one that already exists.
+/// Write options whose new files are 0600. The caller adds `create_new` or
+/// `truncate`. The mode applies only to a file the open creates.
 pub fn file_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     options.write(true);
@@ -31,17 +30,29 @@ pub fn file_options() -> OpenOptions {
     options
 }
 
-/// Create or truncate `path` for writing, 0600. A file that already existed
-/// keeps its old mode through the open, so it is narrowed afterwards, and a
-/// file this user cannot narrow is an error rather than a readable copy.
-pub fn create(path: &Path) -> io::Result<File> {
-    let file = file_options().create(true).truncate(true).open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(FILE_MODE))?;
+/// Create a new 0600 file in `dir` named `stem.ext`, or `stem-1.ext`,
+/// `stem-2.ext` and so on when that name is taken. Each attempt is a
+/// `create_new` open, which fails on any existing entry, a symlink
+/// included, so nothing already at one of those names is written to.
+pub fn create_new_numbered(dir: &Path, stem: &str, ext: &str) -> io::Result<(PathBuf, File)> {
+    const MAX_SUFFIX: u32 = 1000;
+    for n in 0..=MAX_SUFFIX {
+        let name = if n == 0 {
+            format!("{stem}.{ext}")
+        } else {
+            format!("{stem}-{n}.{ext}")
+        };
+        let path = dir.join(name);
+        match file_options().create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
     }
-    Ok(file)
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("{stem}.{ext} and {stem}-1.{ext} to {stem}-{MAX_SUFFIX}.{ext} all exist"),
+    ))
 }
 
 /// Create `dir` and any missing parents, 0700. A `dir` that already existed,
@@ -64,7 +75,7 @@ pub fn create_dir_all(dir: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn effective_uid() -> u32 {
+pub(crate) fn effective_uid() -> u32 {
     // SAFETY: geteuid takes no arguments, cannot fail and touches no memory.
     unsafe { libc::geteuid() }
 }
@@ -109,30 +120,45 @@ mod tests {
         // The parents it created are 0700 less the umask, which only removes bits.
         assert_eq!(mode(&root.path().join("syswatch")) & 0o077, 0);
 
-        let file = dir.join("snap.json");
-        create(&file).unwrap();
-        assert_eq!(mode(&file), 0o600);
+        let (path, _) = create_new_numbered(&dir, "snap", "json").unwrap();
+        assert_eq!(path, dir.join("snap.json"));
+        assert_eq!(mode(&path), 0o600);
     }
 
     #[test]
-    fn existing_directories_and_files_are_narrowed() {
+    fn an_existing_directory_is_narrowed() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("sessions");
         std::fs::create_dir(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let file = dir.join("config.toml");
-        std::fs::write(&file, "old").unwrap();
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
-
         create_dir_all(&dir).unwrap();
         assert_eq!(mode(&dir), 0o700);
-        create(&file).unwrap().write_all(b"new").unwrap();
-        assert_eq!(mode(&file), 0o600);
-        assert_eq!(
-            std::fs::read(&file).unwrap(),
-            b"new",
-            "the file is truncated"
+    }
+
+    #[test]
+    fn a_taken_name_gets_the_next_number() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
+        let other = dir.join("other.txt");
+        std::fs::write(&other, "original").unwrap();
+        std::os::unix::fs::symlink(&other, dir.join("snap.json")).unwrap();
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("snap-1.json")).unwrap();
+        std::fs::write(dir.join("snap-2.json"), "older").unwrap();
+
+        let (path, mut file) = create_new_numbered(dir, "snap", "json").unwrap();
+        file.write_all(b"new").unwrap();
+        assert_eq!(path, dir.join("snap-3.json"));
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "original");
+        assert!(
+            !dir.join("missing").exists(),
+            "a dangling link is not created through"
         );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("snap-2.json")).unwrap(),
+            "older"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     }
 
     #[test]

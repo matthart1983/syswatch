@@ -7,7 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Allowed range for `tick_ms`, enforced on load, in the settings editor,
@@ -106,13 +105,15 @@ impl SyswatchConfig {
     }
 
     /// [`save`](Self::save) to `path`: the file is 0600, and a directory
-    /// this creates is 0700, like everything else syswatch writes.
+    /// this creates is 0700, like everything else syswatch writes. The
+    /// new config replaces the old one in a single rename, so a failed
+    /// write leaves the old one as it was.
     fn save_to(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             crate::owner_only::create_dir_all(parent)?;
         }
         let contents = toml::to_string_pretty(self)?;
-        crate::owner_only::create(path)?.write_all(contents.as_bytes())?;
+        crate::atomic_file::replace(path, contents.as_bytes())?;
         Ok(())
     }
 }

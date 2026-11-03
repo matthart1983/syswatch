@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod app;
+mod atomic_file;
 mod collect;
 mod config;
 mod insights;

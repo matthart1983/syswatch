@@ -1124,6 +1124,43 @@ mod tests {
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
+    /// A block holding a valid tick stream, but compressed in zstd's pre-1.0
+    /// v0.7 format (raw blocks, so it can be built by hand). Recordings have
+    /// only ever used the current format, and the decoders for the old ones
+    /// are compiled out, so the reader stops at this block as it would at
+    /// any other it can't decompress.
+    #[test]
+    fn a_block_in_a_pre_1_0_zstd_format_is_not_decoded() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("current.swr");
+        {
+            let mut rec = Recorder::create(current.clone()).unwrap();
+            rec.push(&snap_at(1)).unwrap();
+            rec.push(&snap_at(2)).unwrap();
+        }
+        assert_eq!(read(&current).unwrap().len(), 2);
+        let bytes = fs::read(&current).unwrap();
+        let (header, rest) = bytes.split_at(6);
+        let block_len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        let ticks = zstd::stream::decode_all(&rest[4..4 + block_len]).unwrap();
+        assert!(ticks.len() < 128 * 1024, "one raw block holds it");
+
+        // Magic 0xFD2FB527, no dictionary, checksum or size field, 1 MiB window.
+        let mut frame = vec![0x27, 0xb5, 0x2f, 0xfd, 0x00, (20 - 10) << 3];
+        let n = ticks.len();
+        frame.extend_from_slice(&[(1 << 6) | (n >> 16) as u8, (n >> 8) as u8, n as u8]);
+        frame.extend_from_slice(&ticks);
+        frame.extend_from_slice(&[3 << 6, 0, 0]);
+        assert!(zstd::stream::decode_all(frame.as_slice()).is_err());
+
+        let legacy = dir.path().join("legacy.swr");
+        let mut file = header.to_vec();
+        file.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        file.extend_from_slice(&frame);
+        fs::write(&legacy, file).unwrap();
+        assert!(read(&legacy).unwrap().is_empty());
+    }
+
     // ── run_ring ─────────────────────────────────────────────────────
 
     /// Blocks until at least one `.swr` file exists in `dir`, or panics

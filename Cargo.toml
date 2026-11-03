@@ -59,7 +59,7 @@ postcard = { version = "1", features = ["use-std"] }
 # Block-level compression for .swr recordings, on top of the process-table
 # delta encoding in recording.rs — general-purpose compression still helps
 # once the identity/volatile split has removed the biggest redundancy.
-zstd = "0.14"
+zstd = { version = "0.14", default-features = false }
 # Clean Ctrl-C/SIGTERM/SIGHUP handling for `syswatch --record`, so an
 # unattended recording flushes its current chunk instead of losing it
 # to an abrupt kill (Rust doesn't unwind on signal delivery). Without

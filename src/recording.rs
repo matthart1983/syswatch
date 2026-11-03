@@ -52,7 +52,7 @@
 //! format.
 
 use std::collections::{HashMap, VecDeque};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -373,13 +373,15 @@ pub struct Recorder {
 }
 
 impl Recorder {
+    /// Create a new recording at `path`, 0600, in a 0700 directory. A
+    /// recording holds every process's full command line, so nobody else
+    /// on the machine gets to read it.
     pub fn create(path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            crate::owner_only::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new()
+        let file = crate::owner_only::file_options()
             .create_new(true)
-            .write(true)
             .open(&path)?;
         let mut writer = BufWriter::new(file);
         write_header(&mut writer)?;
@@ -697,7 +699,7 @@ pub fn run_ring(
 ) -> Result<()> {
     use std::sync::atomic::Ordering;
 
-    fs::create_dir_all(ring_dir).context("creating ring directory")?;
+    crate::owner_only::create_dir_all(ring_dir).context("creating ring directory")?;
 
     let mut collector = crate::collect::Collector::new(tick.as_millis() as u64);
     let mut current: Option<Recorder> = None;
@@ -752,6 +754,7 @@ pub fn run_ring(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::OpenOptions;
     use std::time::Duration;
 
     fn snap_at(secs: u64) -> Snapshot {
@@ -802,6 +805,30 @@ mod tests {
             read_back[2].t,
             SystemTime::UNIX_EPOCH + Duration::from_secs(3)
         );
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recording_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("syswatch").join("sessions");
+        let path = sessions.join("session.swr");
+        Recorder::create(path.clone()).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&sessions), 0o700);
+
+        // Sessions an older syswatch left in a 0755 directory are hidden
+        // once the next recording starts there.
+        fs::set_permissions(&sessions, fs::Permissions::from_mode(0o755)).unwrap();
+        Recorder::create(sessions.join("next.swr")).unwrap();
+        assert_eq!(mode(&sessions), 0o700);
     }
 
     #[test]
@@ -1226,5 +1253,41 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         let snaps = read(&chunks[0].path()).unwrap();
         assert!(!snaps.is_empty(), "final chunk was not flushed on stop");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ring_directory_and_chunks_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        // A ring directory an older syswatch created at 0755.
+        let dir = tempfile::tempdir().unwrap();
+        let ring_dir = dir.path().join("ring");
+        fs::create_dir(&ring_dir).unwrap();
+        fs::set_permissions(&ring_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_writer = Arc::clone(&stop);
+        let handle = std::thread::spawn({
+            let ring_dir = ring_dir.clone();
+            move || {
+                run_ring(
+                    &ring_dir,
+                    Duration::from_secs(3600),
+                    Duration::from_secs(3600),
+                    Duration::from_millis(15),
+                    &stop,
+                )
+            }
+        });
+        wait_for_first_chunk(&ring_dir);
+        stop_writer.store(true, Ordering::Relaxed);
+        handle.join().unwrap().unwrap();
+
+        assert_eq!(mode(&ring_dir), 0o700);
+        for entry in fs::read_dir(&ring_dir).unwrap() {
+            assert_eq!(mode(&entry.unwrap().path()), 0o600);
+        }
     }
 }

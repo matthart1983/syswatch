@@ -1,0 +1,11 @@
+# cargo-nextest profiles. CI runs `cargo nextest run --profile ci`.
+#
+# Nothing retries. No test has shown a flake yet, so a test that fails once
+# fails the run. If one starts to flake on CI runners, give it a named
+# `[[profile.ci.overrides]]` entry with `retries`, and nextest will report a
+# pass on retry as FLAKY rather than as a plain pass.
+
+[profile.ci]
+# Run every test, so one failure doesn't hide the next.
+fail-fast = false
+failure-output = "immediate-final"

@@ -1,0 +1,63 @@
+name: Nix
+
+# Builds the flake the way a Nix user gets it: package.nix's checkPhase runs
+# the tests inside the Nix sandbox. Nothing built the flake before this job
+# existed, and it rotted: the version sat five releases behind and `src`
+# dragged `target/` into the store.
+#
+# It lives outside ci.yml so a Nix-only failure shows on the pull request
+# without holding a release (scripts/release-guard.sh only reads ci.yml).
+# The weekly run catches breakage that arrives with no change here.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - package.nix
+      - .github/workflows/nix.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - package.nix
+      - .github/workflows/nix.yml
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # 31.11.3
+
+      # Every system the flake declares must still evaluate, macOS included,
+      # though only Linux is built here.
+      - name: Flake check
+        run: nix flake check --all-systems
+
+      - name: Build
+        run: nix build .#syswatch --print-build-logs
+
+      - name: Version matches Cargo.toml
+        run: |
+          cargo_version=$(nix eval --raw --impure --expr \
+            '(builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version')
+          built=$(nix eval --raw .#syswatch.version)
+          echo "Cargo.toml=$cargo_version  package.nix=$built"
+          test "$cargo_version" = "$built"

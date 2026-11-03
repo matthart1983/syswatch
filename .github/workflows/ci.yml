@@ -5,20 +5,37 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # For a commit CI never ran on, such as a tag on a commit that was not the
+  # head of a push: `gh workflow run ci.yml --ref vX.Y.Z`.
+  workflow_dispatch:
+
+# Read-only token for every job: nothing here writes to the repository.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
+# A release waits for some of these jobs, by name: REQUIRED_JOBS in
+# scripts/release-guard.sh. Renaming one of those, or a matrix entry, makes
+# the guard refuse every tag until the list is updated to match.
 jobs:
+  # Windows runs here so a break shows on the pull request, but it doesn't
+  # hold a release: no Windows binary ships, and REQUIRED_JOBS leaves out
+  # `test (windows-latest)`.
   test:
+    name: test (${{ matrix.os }})
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Check formatting
         run: cargo fmt --check
@@ -29,8 +46,34 @@ jobs:
       - name: Build
         run: cargo build --release
 
+      # The action's commit fixes the nextest version: install-action keeps
+      # its version manifests in the repository.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: cargo-nextest
+
+      # nextest runs each test in its own process, and the ci profile in
+      # .config/nextest.toml reports every failure rather than stopping at
+      # the first. Nextest skips doctests, and this binary crate has none.
       - name: Test
-        run: cargo test
+        run: cargo nextest run --profile ci --locked
+
+  # tests/release_guard.rs, which runs scripts/release-guard.sh and
+  # scripts/release.sh in scratch repositories against a fake gh, and checks
+  # release.yml's jobs. Ignored in a plain test run: they need bash, git and
+  # jq, and read .github, which package.nix leaves out of the Nix build.
+  release-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Test the release guard and release script
+        run: cargo test --locked --test release_guard -- --include-ignored
 
   # Advisories, licenses and sources for every dependency, per deny.toml. A
   # new RustSec advisory turns this red with no code change, which is the
@@ -59,29 +102,3 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: cargo check on the minimum supported Rust
         run: cargo check --all-targets --locked
-
-  # Nothing built the flake, so it silently rotted: the version was
-  # pinned five releases behind and `src` was dragging `target/` into
-  # the store. Cheap Linux-only job to keep both honest.
-  nix:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v27
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      - name: Flake check
-        run: nix flake check --all-systems
-
-      - name: Build
-        run: nix build .#syswatch --print-build-logs
-
-      - name: Version matches Cargo.toml
-        run: |
-          cargo_version=$(nix eval --raw --impure --expr \
-            '(builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version')
-          built=$(nix eval --raw .#syswatch.version)
-          echo "Cargo.toml=$cargo_version  package.nix=$built"
-          test "$cargo_version" = "$built"

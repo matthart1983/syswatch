@@ -1,0 +1,42 @@
+# Weekly update PRs. Security updates arrive as soon as an advisory is
+# published, independently of this schedule, once Dependabot security
+# updates are turned on in the repository settings.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # Patch and minor updates in one PR a week, rather than one per crate.
+    groups:
+      cargo-minor:
+        update-types: [minor, patch]
+    # On a 0.x crate a minor release can break the API, and these upgrades
+    # are planned by hand: ratatui 0.30 with crossterm 0.29, sysinfo 0.40,
+    # toml 1, dirs 7, and netwatch-sdk, which is to be vendored. Patch
+    # releases still come through.
+    ignore:
+      - dependency-name: ratatui
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: crossterm
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: sysinfo
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: toml
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: dirs
+        update-types: ["version-update:semver-major"]
+      - dependency-name: netwatch-sdk
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # ratatui 0.29 pins unicode-width to =0.2.0. Under ratatui 0.30,
+      # unicode-width 0.2.3 misplaces halfwidth marks, so that upgrade
+      # pins it by hand.
+      - dependency-name: unicode-width
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

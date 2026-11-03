@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # For a commit CI never ran on, such as a tag on a commit that was not the
+  # head of a push: `gh workflow run ci.yml --ref vX.Y.Z`.
+  workflow_dispatch:
 
 # Read-only token for every job: nothing here writes to the repository.
 permissions:
@@ -13,7 +16,13 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# A release waits for some of these jobs, by name: REQUIRED_JOBS in
+# scripts/release-guard.sh. Renaming one of those, or a matrix entry, makes
+# the guard refuse every tag until the list is updated to match.
 jobs:
+  # Windows runs here so a break shows on the pull request, but it doesn't
+  # hold a release: no Windows binary ships, and REQUIRED_JOBS leaves out
+  # `test (windows-latest)`.
   test:
     name: test (${{ matrix.os }})
     strategy:
@@ -49,6 +58,22 @@ jobs:
       # the first. Nextest skips doctests, and this binary crate has none.
       - name: Test
         run: cargo nextest run --profile ci --locked
+
+  # tests/release_guard.rs, which runs scripts/release-guard.sh and
+  # scripts/release.sh in scratch repositories against a fake gh, and checks
+  # release.yml's jobs. Ignored in a plain test run: they need bash, git and
+  # jq, and read .github, which package.nix leaves out of the Nix build.
+  release-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Test the release guard and release script
+        run: cargo test --locked --test release_guard -- --include-ignored
 
   # Advisories, licenses and sources for every dependency, per deny.toml. A
   # new RustSec advisory turns this red with no code change, which is the

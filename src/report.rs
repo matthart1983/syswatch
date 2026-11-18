@@ -63,14 +63,23 @@ fn sample_window(window: Duration, tick: Duration) -> (History, Snapshot) {
 // ── snapshot ─────────────────────────────────────────────────────────────
 
 pub fn run_snapshot(json: bool) -> Result<()> {
-    let mut collector = Collector::new(1000);
-    let snap = collector.sample();
+    let snap = take_snapshot();
     if json {
         println!("{}", serde_json::to_string_pretty(&snap)?);
     } else {
         print_snapshot_text(&snap);
     }
     Ok(())
+}
+
+/// CPU usage and disk/network rates are deltas between two refreshes, so a
+/// fresh collector's first sample reads 0. Take a second one a second later.
+fn take_snapshot() -> Snapshot {
+    let mut collector = Collector::new(1000);
+    collector.sample();
+    std::thread::sleep(Duration::from_secs(1));
+    collector.refresh_processes_next_sample();
+    collector.sample()
 }
 
 fn print_snapshot_text(snap: &Snapshot) {
@@ -466,6 +475,23 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&json).expect("must parse back as valid JSON");
         assert!(parsed.is_object());
+    }
+
+    #[test]
+    fn take_snapshot_reports_cpu_usage() {
+        let busy = std::thread::spawn(|| {
+            let end = Instant::now() + Duration::from_millis(1500);
+            while Instant::now() < end {
+                std::hint::black_box(0u64);
+            }
+        });
+        let snap = take_snapshot();
+        busy.join().unwrap();
+        assert!(
+            snap.cpu.usage_pct > 0.0,
+            "cpu usage was {}",
+            snap.cpu.usage_pct
+        );
     }
 
     #[test]

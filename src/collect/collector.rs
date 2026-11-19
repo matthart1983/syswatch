@@ -146,6 +146,12 @@ impl Collector {
         &self.host
     }
 
+    /// Make the next `sample` refresh the process list even if the
+    /// regular refresh interval has not passed yet.
+    pub fn refresh_processes_next_sample(&mut self) {
+        self.last_procs_refresh = None;
+    }
+
     pub fn sample(&mut self) -> Snapshot {
         let now = Instant::now();
         let dt_secs = self
